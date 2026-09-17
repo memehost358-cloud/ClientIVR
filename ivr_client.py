@@ -51,6 +51,11 @@ class IVRClient:
 
         self.logger.info(f"Validating card: {masked_card}")
 
+        # Use SignalWire credentials if available, otherwise Twilio
+        account_sid = self.config.signalwire_account_sid or self.config.twilio_account_sid
+        auth_token = self.config.signalwire_auth_token or self.config.twilio_auth_token
+        phone_number = self.config.signalwire_phone_number or self.config.twilio_phone_number
+        
         # Prepare channel variables
         variables = {
             "IVR_NUMBER": self.config.ivr_phone_number,
@@ -58,9 +63,9 @@ class IVRClient:
             "SECURITY_CODE": "",
             "CALL_ID": call_id,
             "RECORD_FILE": f"{self.config.recordings_dir}/{call_id}.wav",
-            "TWILIO_ACCOUNT_SID": self.config.twilio_account_sid,
-            "TWILIO_AUTH_TOKEN": self.config.twilio_auth_token,
-            "TWILIO_PHONE_NUMBER": self.config.twilio_phone_number,
+            "SIGNALWIRE_ACCOUNT_SID": account_sid,
+            "SIGNALWIRE_AUTH_TOKEN": auth_token,
+            "SIGNALWIRE_PHONE_NUMBER": phone_number,
         }
 
         var_string = ",".join(f"{k}={v}" for k, v in variables.items())
@@ -73,7 +78,7 @@ class IVRClient:
             "Priority": 1,
             "Timeout": 120000,
             "Async": "true",
-            "CallerID": f"CardValidation <{self.config.twilio_phone_number}>",
+            "CallerID": f"CardValidation <{phone_number}>",
             "Variable": var_string,
         }
 
@@ -97,6 +102,11 @@ class IVRClient:
 
         self.logger.info(f"Validating security code {security_code} for card: {masked_card}")
 
+        # Use SignalWire credentials if available, otherwise Twilio
+        account_sid = self.config.signalwire_account_sid or self.config.twilio_account_sid
+        auth_token = self.config.signalwire_auth_token or self.config.twilio_auth_token
+        phone_number = self.config.signalwire_phone_number or self.config.twilio_phone_number
+        
         # Prepare channel variables
         variables = {
             "IVR_NUMBER": self.config.ivr_phone_number,
@@ -104,9 +114,9 @@ class IVRClient:
             "SECURITY_CODE": security_code,
             "CALL_ID": call_id,
             "RECORD_FILE": f"{self.config.recordings_dir}/{call_id}.wav",
-            "TWILIO_ACCOUNT_SID": self.config.twilio_account_sid,
-            "TWILIO_AUTH_TOKEN": self.config.twilio_auth_token,
-            "TWILIO_PHONE_NUMBER": self.config.twilio_phone_number,
+            "SIGNALWIRE_ACCOUNT_SID": account_sid,
+            "SIGNALWIRE_AUTH_TOKEN": auth_token,
+            "SIGNALWIRE_PHONE_NUMBER": phone_number,
         }
 
         var_string = ",".join(f"{k}={v}" for k, v in variables.items())
@@ -119,7 +129,7 @@ class IVRClient:
             "Priority": 1,
             "Timeout": 120000,
             "Async": "true",
-            "CallerID": f"CardValidation <{self.config.twilio_phone_number}>",
+            "CallerID": f"CardValidation <{phone_number}>",
             "Variable": var_string,
         }
 

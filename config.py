@@ -27,7 +27,12 @@ class Config:
     ivr_phone_number: str
     card_number: str
 
-    # SIP Trunk Configuration (Twilio)
+    # SIP Trunk Configuration (SignalWire)
+    signalwire_account_sid: str
+    signalwire_auth_token: str
+    signalwire_phone_number: str
+    
+    # SIP Trunk Configuration (Twilio - Optional)
     twilio_account_sid: str
     twilio_auth_token: str
     twilio_phone_number: str
@@ -69,6 +74,12 @@ class Config:
             ivr_phone_number=os.getenv('IVR_PHONE_NUMBER', ''),
             card_number=os.getenv('CARD_NUMBER', ''),
 
+            # SignalWire credentials (primary)
+            signalwire_account_sid=os.getenv('SIGNALWIRE_ACCOUNT_SID', os.getenv('TWILIO_ACCOUNT_SID', '')),
+            signalwire_auth_token=os.getenv('SIGNALWIRE_AUTH_TOKEN', os.getenv('TWILIO_AUTH_TOKEN', '')),
+            signalwire_phone_number=os.getenv('SIGNALWIRE_PHONE_NUMBER', os.getenv('TWILIO_PHONE_NUMBER', '')),
+            
+            # Twilio credentials (fallback)
             twilio_account_sid=os.getenv('TWILIO_ACCOUNT_SID', ''),
             twilio_auth_token=os.getenv('TWILIO_AUTH_TOKEN', ''),
             twilio_phone_number=os.getenv('TWILIO_PHONE_NUMBER', ''),
