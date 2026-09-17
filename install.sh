@@ -18,7 +18,7 @@ sudo apt install -y python3 python3-pip python3-venv build-essential
 
 # Install Asterisk
 echo "Installing Asterisk..."
-sudo apt install -y asterisk asterisk-dahdi asterisk-extra-sounds
+sudo apt install -y asterisk asterisk-dahdi
 
 # Install additional dependencies
 echo "Installing additional dependencies..."
