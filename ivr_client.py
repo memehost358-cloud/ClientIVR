@@ -77,7 +77,8 @@ class IVRClient:
             "Variable": var_string,
         }
 
-        await self.manager.send_action(action)
+        response = await self.manager.send_action(action)
+        self.logger.info(f"Call originated: {response}")
 
         # Wait for call completion
         await asyncio.sleep(30)  # Wait for call to complete
@@ -122,7 +123,8 @@ class IVRClient:
             "Variable": var_string,
         }
 
-        await self.manager.send_action(action)
+        response = await self.manager.send_action(action)
+        self.logger.info(f"Call originated: {response}")
 
         # Wait for call completion
         await asyncio.sleep(20)  # Wait for call to complete
