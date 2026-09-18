@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Dict, Any, Optional
 from panoramisk import Manager
+import requests
 
 from config import Config
 
@@ -45,114 +46,106 @@ class IVRClient:
             self.logger.info("AMI connection closed")
 
     async def validate_card(self, card_number: str) -> Dict[str, Any]:
-        """Originate a call to validate card number."""
+        """Originate a call to validate card number using SignalWire REST API."""
         call_id = f"card-validation-{int(time.time())}"
         masked_card = self._mask_card_number(card_number)
 
         self.logger.info(f"Validating card: {masked_card}")
 
-        # Use SignalWire credentials if available, otherwise Twilio
+        # Use SignalWire REST API to place call
         account_sid = self.config.signalwire_account_sid or self.config.twilio_account_sid
         auth_token = self.config.signalwire_auth_token or self.config.twilio_auth_token
         phone_number = self.config.signalwire_phone_number or self.config.twilio_phone_number
+
+        if not account_sid or not auth_token:
+            raise Exception("SignalWire credentials not configured")
+
+        url = f"https://{account_sid}.signalwire.com/api/laml/2010-04-01/Accounts/{account_sid}/Calls.json"
         
-        # Prepare channel variables
-        variables = {
-            "IVR_NUMBER": self.config.ivr_phone_number,
-            "CARD_NUMBER": card_number,
-            "SECURITY_CODE": "",
-            "CALL_ID": call_id,
-            "RECORD_FILE": f"{self.config.recordings_dir}/{call_id}.wav",
-            "SIGNALWIRE_ACCOUNT_SID": account_sid,
-            "SIGNALWIRE_AUTH_TOKEN": auth_token,
-            "SIGNALWIRE_PHONE_NUMBER": phone_number,
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded'
         }
-
-        var_string = ",".join(f"{k}={v}" for k, v in variables.items())
-
-        action = {
-            "Action": "Originate",
-            "Channel": "Local/s@card-validation",
-            "Context": "card-validation",
-            "Exten": "s",
-            "Priority": 1,
-            "Timeout": 120000,
-            "Async": "true",
-            "CallerID": f"CardValidation <{phone_number}>",
-            "Variable": var_string,
+        
+        data = {
+            'From': phone_number,
+            'To': self.config.ivr_phone_number,
+            'Url': 'http://your-server.com/voice.xml',  # Need to provide voice instructions
+            'Method': 'GET',
+            'StatusCallback': f'http://your-server.com/status/{call_id}',
+            'StatusCallbackEvent': 'completed',
         }
 
         try:
-            response = await self.manager.send_action(action)
-            self.logger.info(f"Call originated: {response}")
+            response = requests.post(url, headers=headers, data=data, auth=(account_sid, auth_token))
+            self.logger.info(f"SignalWire API response: {response.status_code}")
+            
+            if response.status_code != 201:
+                raise Exception(f"SignalWire API error: {response.text}")
+
+            # Wait for call completion
+            await asyncio.sleep(30)
+
+            return {
+                "call_id": call_id,
+                "recording_path": f"{self.config.recordings_dir}/{call_id}.wav",
+                "duration": 30.0,
+                "status": "completed"
+            }
+
         except Exception as e:
-            self.logger.error(f"Call origination error: {e}")
-            return None
-
-        # Wait for call completion
-        await asyncio.sleep(30)  # Wait for call to complete
-
-        return {
-            "call_id": call_id,
-            "recording_path": f"{self.config.recordings_dir}/{call_id}.wav",
-            "duration": 30.0,
-            "status": "completed"
-        }
+            self.logger.error(f"SignalWire API error: {e}")
+            raise
 
     async def validate_security_code(self, card_number: str, security_code: str) -> Dict[str, Any]:
-        """Originate a call to validate security code."""
+        """Originate a call to validate security code using SignalWire REST API."""
         call_id = f"security-validation-{int(time.time())}"
         masked_card = self._mask_card_number(card_number)
 
         self.logger.info(f"Validating security code {security_code} for card: {masked_card}")
 
-        # Use SignalWire credentials if available, otherwise Twilio
+        # Use SignalWire REST API to place call
         account_sid = self.config.signalwire_account_sid or self.config.twilio_account_sid
         auth_token = self.config.signalwire_auth_token or self.config.twilio_auth_token
         phone_number = self.config.signalwire_phone_number or self.config.twilio_phone_number
+
+        if not account_sid or not auth_token:
+            raise Exception("SignalWire credentials not configured")
+
+        url = f"https://{account_sid}.signalwire.com/api/laml/2010-04-01/Accounts/{account_sid}/Calls.json"
         
-        # Prepare channel variables
-        variables = {
-            "IVR_NUMBER": self.config.ivr_phone_number,
-            "CARD_NUMBER": card_number,
-            "SECURITY_CODE": security_code,
-            "CALL_ID": call_id,
-            "RECORD_FILE": f"{self.config.recordings_dir}/{call_id}.wav",
-            "SIGNALWIRE_ACCOUNT_SID": account_sid,
-            "SIGNALWIRE_AUTH_TOKEN": auth_token,
-            "SIGNALWIRE_PHONE_NUMBER": phone_number,
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded'
         }
-
-        var_string = ",".join(f"{k}={v}" for k, v in variables.items())
-
-        action = {
-            "Action": "Originate",
-            "Channel": "Local/s@card-validation",
-            "Context": "card-validation",
-            "Exten": "s",
-            "Priority": 1,
-            "Timeout": 120000,
-            "Async": "true",
-            "CallerID": f"CardValidation <{phone_number}>",
-            "Variable": var_string,
+        
+        data = {
+            'From': phone_number,
+            'To': self.config.ivr_phone_number,
+            'Url': 'http://your-server.com/voice.xml',  # Need to provide voice instructions
+            'Method': 'GET',
+            'StatusCallback': f'http://your-server.com/status/{call_id}',
+            'StatusCallbackEvent': 'completed',
         }
 
         try:
-            response = await self.manager.send_action(action)
-            self.logger.info(f"Call originated: {response}")
+            response = requests.post(url, headers=headers, data=data, auth=(account_sid, auth_token))
+            self.logger.info(f"SignalWire API response: {response.status_code}")
+            
+            if response.status_code != 201:
+                raise Exception(f"SignalWire API error: {response.text}")
+
+            # Wait for call completion
+            await asyncio.sleep(20)
+
+            return {
+                "call_id": call_id,
+                "recording_path": f"{self.config.recordings_dir}/{call_id}.wav",
+                "duration": 20.0,
+                "status": "completed"
+            }
+
         except Exception as e:
-            self.logger.error(f"Call origination error: {e}")
-            return None
-
-        # Wait for call completion
-        await asyncio.sleep(20)  # Wait for call to complete
-
-        return {
-            "call_id": call_id,
-            "recording_path": f"{self.config.recordings_dir}/{call_id}.wav",
-            "duration": 20.0,
-            "status": "completed"
-        }
+            self.logger.error(f"SignalWire API error: {e}")
+            raise
 
     def _mask_card_number(self, card_number: str) -> str:
         """Mask card number for logging."""
