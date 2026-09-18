@@ -4,6 +4,9 @@
 
 echo "Starting Card Validation System..."
 
+# Activate virtual environment
+source venv/bin/activate
+
 # Start web server in background
 echo "Starting Voice XML web server on port 5000..."
 python3 web_server.py &
