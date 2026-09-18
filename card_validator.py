@@ -118,7 +118,7 @@ class CardValidator:
             await ivr_client.disconnect()
             
             if call_result is None:
-                raise Exception("Call origination failed")
+                raise Exception("Call origination failed - no response from IVR client")
 
             # Transcribe response
             transcription_service = TranscriptionService(self.config, self.logger)

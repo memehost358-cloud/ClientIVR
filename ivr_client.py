@@ -10,7 +10,6 @@ import asyncio
 import logging
 import time
 from typing import Dict, Any, Optional
-from panoramisk import Manager
 import requests
 
 from config import Config
@@ -22,28 +21,15 @@ class IVRClient:
     def __init__(self, config: Config, logger: logging.Logger):
         self.config = config
         self.logger = logger
-        self.manager: Optional[Manager] = None
         self.call_state: Dict[str, Any] = {}
 
     async def connect(self) -> None:
-        """Connect to Asterisk AMI."""
-        self.logger.info(f"Connecting to AMI {self.config.ami_host}:{self.config.ami_port}")
-
-        self.manager = Manager(
-            host=self.config.ami_host,
-            port=self.config.ami_port,
-            username=self.config.ami_username,
-            secret=self.config.ami_secret,
-        )
-
-        await self.manager.connect()
-        self.logger.info("AMI connection established")
+        """Connect to SignalWire REST API (no AMI needed for REST API)."""
+        self.logger.info("Using SignalWire REST API - no AMI connection needed")
 
     async def disconnect(self) -> None:
-        """Disconnect from Asterisk AMI."""
-        if self.manager:
-            await self.manager.close()
-            self.logger.info("AMI connection closed")
+        """Disconnect from SignalWire REST API (no AMI needed)."""
+        self.logger.info("SignalWire REST API call completed")
 
     async def validate_card(self, card_number: str) -> Dict[str, Any]:
         """Originate a call to validate card number using SignalWire REST API."""
@@ -60,6 +46,9 @@ class IVRClient:
         if not account_sid or not auth_token:
             raise Exception("SignalWire credentials not configured")
 
+        # Use localhost for now - will need public URL with ngrok or similar
+        voice_url = f"http://10.0.0.157:5000/voice.xml?stage=card_entry&card_number={card_number}"
+        
         url = f"https://{account_sid}.signalwire.com/api/laml/2010-04-01/Accounts/{account_sid}/Calls.json"
         
         headers = {
@@ -69,17 +58,18 @@ class IVRClient:
         data = {
             'From': phone_number,
             'To': self.config.ivr_phone_number,
-            'Url': 'http://your-server.com/voice.xml',  # Need to provide voice instructions
+            'Url': voice_url,
             'Method': 'GET',
-            'StatusCallback': f'http://your-server.com/status/{call_id}',
+            'StatusCallback': f'http://10.0.0.157:5000/status/{call_id}',
             'StatusCallbackEvent': 'completed',
         }
 
         try:
             response = requests.post(url, headers=headers, data=data, auth=(account_sid, auth_token))
             self.logger.info(f"SignalWire API response: {response.status_code}")
+            self.logger.info(f"SignalWire API body: {response.text}")
             
-            if response.status_code != 201:
+            if response.status_code not in [200, 201]:
                 raise Exception(f"SignalWire API error: {response.text}")
 
             # Wait for call completion
@@ -111,6 +101,9 @@ class IVRClient:
         if not account_sid or not auth_token:
             raise Exception("SignalWire credentials not configured")
 
+        # Use localhost for now - will need public URL with ngrok or similar
+        voice_url = f"http://10.0.0.157:5000/voice.xml?stage=security_code&security_code={security_code}"
+        
         url = f"https://{account_sid}.signalwire.com/api/laml/2010-04-01/Accounts/{account_sid}/Calls.json"
         
         headers = {
@@ -120,17 +113,18 @@ class IVRClient:
         data = {
             'From': phone_number,
             'To': self.config.ivr_phone_number,
-            'Url': 'http://your-server.com/voice.xml',  # Need to provide voice instructions
+            'Url': voice_url,
             'Method': 'GET',
-            'StatusCallback': f'http://your-server.com/status/{call_id}',
+            'StatusCallback': f'http://10.0.0.157:5000/status/{call_id}',
             'StatusCallbackEvent': 'completed',
         }
 
         try:
             response = requests.post(url, headers=headers, data=data, auth=(account_sid, auth_token))
             self.logger.info(f"SignalWire API response: {response.status_code}")
+            self.logger.info(f"SignalWire API body: {response.text}")
             
-            if response.status_code != 201:
+            if response.status_code not in [200, 201]:
                 raise Exception(f"SignalWire API error: {response.text}")
 
             # Wait for call completion
