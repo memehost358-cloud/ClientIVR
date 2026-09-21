@@ -4,3 +4,15 @@
 === 2. git diff --name-only HEAD ===
 _git_output.log
 === 3. git add -A ===
+warning: in the working copy of '_run_git.ps1', LF will be replaced by CRLF the next time Git touches it
+=== 4. git status --short ===
+MM _git_output.log
+A  _run_git.ps1
+=== 5. git commit ===
+[main eb0b37a] Fix provider validation: PROV_CALLERID_* is now OPTIONAL (only PROV_ENDPOINT_* required); Asterisk trunk default CLI used when unset
+ 2 files changed, 31 insertions(+)
+ create mode 100644 _run_git.ps1
+=== 6. git push origin main ===
+To https://github.com/memehost358-cloud/ClientIVR.git
+   ce904a2..eb0b37a  main -> main
+DONE
