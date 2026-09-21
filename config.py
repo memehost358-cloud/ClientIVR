@@ -158,19 +158,46 @@ class ProviderPolicy:
 
     def validate(self) -> List[str]:
         errors: List[str] = []
+        warnings: List[str] = []
         if not self.order:
             errors.append("PROVIDER_ORDER list is empty")
             return errors
+
+        fully_valid_providers = 0
         for p in self.order:
-            if not p.endpoint or p.endpoint.lower().startswith("your_"):
-                errors.append(f"PROV_ENDPOINT_{p.name.upper()} missing or placeholder")
-            if not p.caller_id_num or p.caller_id_num.lower().startswith("your_"):
-                errors.append(f"PROV_CALLERID_{p.name.upper()} missing or placeholder")
+            ok_endpoint = bool(p.endpoint and not p.endpoint.lower().startswith("your_"))
+            ok_callerid = bool(p.caller_id_num and not p.caller_id_num.lower().startswith("your_"))
+            if ok_endpoint and ok_callerid:
+                fully_valid_providers += 1
+            else:
+                # Only warn for incomplete providers — so SIGNALWIRE-only configs with
+                # default PROVIDER_ORDER=signalwire,twilio still pass (no Twilio callerid needed).
+                missing = []
+                if not ok_endpoint:
+                    missing.append(f"PROV_ENDPOINT_{p.name.upper()}")
+                if not ok_callerid:
+                    missing.append(f"PROV_CALLERID_{p.name.upper()}")
+                warnings.append(
+                    f"SKIPPING provider '{p.name}' (missing or placeholder: {', '.join(missing)})"
+                )
+
+        if fully_valid_providers == 0:
+            # No provider is fully configured → fatal
+            for w in warnings:
+                errors.append(w.replace("SKIPPING provider", "PROVIDER MISCONFIGURED"))
+            errors.append(
+                "NO VALID PROVIDER IN PROVIDER_ORDER. "
+                "Set PROV_ENDPOINT_<name> + PROV_CALLERID_<name> for at least one provider in PROVIDER_ORDER."
+            )
+        else:
+            for w in warnings:
+                print(f"WARN: {w}")
+
         return errors
 
 
 def _build_provider_policy_from_env() -> ProviderPolicy:
-    order_raw = os.getenv("PROVIDER_ORDER", "signalwire,twilio")
+    order_raw = os.getenv("PROVIDER_ORDER", "signalwire")
     names = [n.strip().lower() for n in order_raw.split(",") if n.strip()]
 
     lookup_credentials = {
@@ -331,17 +358,20 @@ class Config:
 
         errors.extend(self.provider_policy.validate())
 
-        # At least one provider must have credentials set (so Asterisk's own
-        # registration will actually succeed). It's okay to have 1 of N set.
-        any_creds = any(
+        # SIP trunk credentials (SignalWire/Twilio) are usually stored directly in
+        # Asterisk sip.conf / pjsip.conf, not in env. We emit a WARN if none are
+        # set in env, but don't treat it as fatal — the actual SIP registration
+        # is handled by Asterisk (you can confirm with `sip show registry`).
+        any_creds_env = any(
             (p.account_sid and not p.account_sid.lower().startswith("your_"))
             and (p.auth_token and not p.auth_token.lower().startswith("your_"))
             for p in self.provider_policy.order
         )
-        if not any_creds:
-            errors.append(
-                "SIP TRUNK CREDENTIALS: set either SIGNALWIRE_ACCOUNT_SID/AUTH_TOKEN "
-                "or TWILIO_ACCOUNT_SID/AUTH_TOKEN (or both) in .env"
+        if not any_creds_env:
+            print(
+                "WARN: No SIGNALWIRE_* or TWILIO_* credentials in env. "
+                "This is OK if Asterisk stores them in sip.conf/pjsip.conf "
+                "(confirm with `asterisk -rx 'sip show registry'`)."
             )
 
         try:
