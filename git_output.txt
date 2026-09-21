@@ -1,0 +1,4 @@
+﻿=== 1. git status --porcelain ===
+?? git_output.txt
+=== 2. git diff --name-only HEAD ===
+=== 3. git add -A ===
