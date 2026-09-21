@@ -1,148 +1,229 @@
 #!/usr/bin/env python3
-"""
-IVR Client - Handles interaction with IVR systems via Asterisk AMI
-
-Manages Asterisk Manager Interface connections, call origination,
-and DTMF sending for card validation.
-"""
 
 import asyncio
 import logging
 import time
-from typing import Dict, Any, Optional
-import requests
+import uuid
+from pathlib import Path
+from typing import Dict, Any
+
+from panoramisk.manager import Manager
 
 from config import Config
 
 
 class IVRClient:
-    """IVR interaction client using Asterisk AMI."""
+    """
+    Asterisk AMI client.
+
+    Telephony path:
+
+        Python
+          -> Asterisk AMI
+          -> card-validation dialplan
+          -> SIP/SignalWire
+          -> IVR
+          -> MixMonitor
+          -> recording file
+    """
 
     def __init__(self, config: Config, logger: logging.Logger):
         self.config = config
         self.logger = logger
+        self.manager = None
         self.call_state: Dict[str, Any] = {}
 
     async def connect(self) -> None:
-        """Connect to SignalWire REST API (no AMI needed for REST API)."""
-        self.logger.info("Using SignalWire REST API - no AMI connection needed")
+        """Connect to the local Asterisk AMI."""
+        self.manager = Manager(
+            host=self.config.ami_host,
+            port=self.config.ami_port,
+            username=self.config.ami_username,
+            secret=self.config.ami_secret,
+        )
+
+        await self.manager.connect()
+
+        self.logger.info(
+            "Connected to Asterisk AMI %s:%s",
+            self.config.ami_host,
+            self.config.ami_port,
+        )
 
     async def disconnect(self) -> None:
-        """Disconnect from SignalWire REST API (no AMI needed)."""
-        self.logger.info("SignalWire REST API call completed")
+        """Close the AMI connection."""
+        if self.manager is not None:
+            self.manager.close()
+            self.manager = None
+            self.logger.info("Disconnected from Asterisk AMI")
 
     async def validate_card(self, card_number: str) -> Dict[str, Any]:
-        """Originate a call to validate card number using SignalWire REST API."""
-        call_id = f"card-validation-{int(time.time())}"
+        """
+        Originate a real outbound call through the Asterisk dialplan.
+
+        The dialplan is responsible for:
+          - calling SignalWire
+          - entering the IVR
+          - sending the card number
+          - recording the call
+        """
+
+        if self.manager is None:
+            raise RuntimeError("AMI connection is not established")
+
+        call_id = f"card-validation-{uuid.uuid4().hex}"
+        recording_path = (
+            Path(self.config.recordings_dir) / f"{call_id}.wav"
+        )
+
         masked_card = self._mask_card_number(card_number)
 
-        self.logger.info(f"Validating card: {masked_card}")
+        self.logger.info(
+            "Starting Asterisk IVR call %s for card %s",
+            call_id,
+            masked_card,
+        )
 
-        # Use SignalWire REST API to place call
-        account_sid = self.config.signalwire_account_sid or self.config.twilio_account_sid
-        auth_token = self.config.signalwire_auth_token or self.config.twilio_auth_token
-        phone_number = self.config.signalwire_phone_number or self.config.twilio_phone_number
+        originate = {
+            "Action": "Originate",
+            "ActionID": call_id,
 
-        if not account_sid or not auth_token:
-            raise Exception("SignalWire credentials not configured")
+            # Local channel enters our card-validation dialplan.
+            "Channel": "Local/s@card-validation",
 
-        # Use localhost for now - will need public URL with ngrok or similar
-        voice_url = f"http://10.0.0.157:5000/voice.xml?stage=card_entry&card_number={card_number}"
-        
-        url = f"https://{account_sid}.signalwire.com/api/laml/2010-04-01/Accounts/{account_sid}/Calls.json"
-        
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded'
+            "Context": "card-validation",
+            "Exten": "s",
+            "Priority": "1",
+
+            "Timeout": "120000",
+
+            "CallerID": self.config.signalwire_phone_number,
+
+            "Async": "true",
+
+            "Variable": [
+                f"CALL_ID={call_id}",
+                f"IVR_NUMBER={self.config.ivr_phone_number}",
+                f"SIGNALWIRE_PHONE_NUMBER={self.config.signalwire_phone_number}",
+                f"RECORD_FILE={recording_path}",
+                f"CARD_NUMBER={card_number}",
+                "SECURITY_CODE=",
+            ],
         }
-        
-        data = {
-            'From': phone_number,
-            'To': self.config.ivr_phone_number,
-            'Url': voice_url,
-            'Method': 'GET',
-            'StatusCallback': f'http://10.0.0.157:5000/status/{call_id}',
-            'StatusCallbackEvent': 'completed',
+
+        self.call_state[call_id] = {
+            "status": "originating",
+            "recording_path": str(recording_path),
+            "started_at": time.time(),
         }
 
         try:
-            response = requests.post(url, headers=headers, data=data, auth=(account_sid, auth_token))
-            self.logger.info(f"SignalWire API response: {response.status_code}")
-            self.logger.info(f"SignalWire API body: {response.text}")
-            
-            if response.status_code not in [200, 201]:
-                raise Exception(f"SignalWire API error: {response.text}")
+            response = await self.manager.send_action(originate)
 
-            # Wait for call completion
-            await asyncio.sleep(30)
+            self.logger.info(
+                "Asterisk Originate response: %s",
+                response,
+            )
 
-            return {
-                "call_id": call_id,
-                "recording_path": f"{self.config.recordings_dir}/{call_id}.wav",
-                "duration": 30.0,
-                "status": "completed"
-            }
+            if response is None:
+                raise RuntimeError(
+                    "Asterisk returned no Originate response"
+                )
 
-        except Exception as e:
-            self.logger.error(f"SignalWire API error: {e}")
+            response_text = str(response)
+
+            if "Error" in response_text or "Failed" in response_text:
+                raise RuntimeError(
+                    f"Asterisk Originate failed: {response_text}"
+                )
+
+            self.call_state[call_id]["status"] = "originated"
+
+            return await self._wait_for_recording(
+                call_id=call_id,
+                recording_path=recording_path,
+                timeout_seconds=150,
+            )
+
+        except Exception:
+            self.call_state[call_id]["status"] = "failed"
             raise
 
-    async def validate_security_code(self, card_number: str, security_code: str) -> Dict[str, Any]:
-        """Originate a call to validate security code using SignalWire REST API."""
-        call_id = f"security-validation-{int(time.time())}"
-        masked_card = self._mask_card_number(card_number)
+    async def validate_security_code(
+        self,
+        card_number: str,
+        security_code: str,
+    ) -> Dict[str, Any]:
+        """
+        Security-code transport boundary.
 
-        self.logger.info(f"Validating security code {security_code} for card: {masked_card}")
+        The validator supplies a candidate here and expects a real
+        telephony result from an approved transport implementation.
+        The candidate-generation controller remains in card_validator.py.
+        """
+        if self.manager is None:
+            raise RuntimeError("AMI connection is not established")
 
-        # Use SignalWire REST API to place call
-        account_sid = self.config.signalwire_account_sid or self.config.twilio_account_sid
-        auth_token = self.config.signalwire_auth_token or self.config.twilio_auth_token
-        phone_number = self.config.signalwire_phone_number or self.config.twilio_phone_number
+        if not security_code or len(security_code) != 3 or not security_code.isdigit():
+            raise ValueError("Security code candidate must be exactly 3 digits")
 
-        if not account_sid or not auth_token:
-            raise Exception("SignalWire credentials not configured")
+        raise NotImplementedError(
+            "Security-code telephony transport is not connected yet. "
+            "The candidate-generation controller remains intact."
+        )
 
-        # Use localhost for now - will need public URL with ngrok or similar
-        voice_url = f"http://10.0.0.157:5000/voice.xml?stage=security_code&security_code={security_code}"
-        
-        url = f"https://{account_sid}.signalwire.com/api/laml/2010-04-01/Accounts/{account_sid}/Calls.json"
-        
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-        
-        data = {
-            'From': phone_number,
-            'To': self.config.ivr_phone_number,
-            'Url': voice_url,
-            'Method': 'GET',
-            'StatusCallback': f'http://10.0.0.157:5000/status/{call_id}',
-            'StatusCallbackEvent': 'completed',
-        }
+    async def _wait_for_recording(
+        self,
+        call_id: str,
+        recording_path: Path,
+        timeout_seconds: int,
+    ) -> Dict[str, Any]:
+        """
+        Wait for the actual MixMonitor file.
 
-        try:
-            response = requests.post(url, headers=headers, data=data, auth=(account_sid, auth_token))
-            self.logger.info(f"SignalWire API response: {response.status_code}")
-            self.logger.info(f"SignalWire API body: {response.text}")
-            
-            if response.status_code not in [200, 201]:
-                raise Exception(f"SignalWire API error: {response.text}")
+        No artificial recording result is returned. The call succeeds here
+        only when Asterisk has actually created the recording.
+        """
 
-            # Wait for call completion
-            await asyncio.sleep(20)
+        started = time.monotonic()
 
-            return {
-                "call_id": call_id,
-                "recording_path": f"{self.config.recordings_dir}/{call_id}.wav",
-                "duration": 20.0,
-                "status": "completed"
-            }
+        while time.monotonic() - started < timeout_seconds:
 
-        except Exception as e:
-            self.logger.error(f"SignalWire API error: {e}")
-            raise
+            if recording_path.exists():
+                size = recording_path.stat().st_size
 
-    def _mask_card_number(self, card_number: str) -> str:
-        """Mask card number for logging."""
+                if size > 0:
+                    duration = time.time() - self.call_state[
+                        call_id
+                    ]["started_at"]
+
+                    self.call_state[call_id]["status"] = "recorded"
+
+                    self.logger.info(
+                        "Actual recording detected: %s (%d bytes)",
+                        recording_path,
+                        size,
+                    )
+
+                    return {
+                        "call_id": call_id,
+                        "recording_path": str(recording_path),
+                        "duration": duration,
+                        "status": "completed",
+                    }
+
+            await asyncio.sleep(1)
+
+        self.call_state[call_id]["status"] = "timeout"
+
+        raise TimeoutError(
+            f"Asterisk did not create the expected recording within "
+            f"{timeout_seconds} seconds: {recording_path}"
+        )
+
+    @staticmethod
+    def _mask_card_number(card_number: str) -> str:
         if len(card_number) <= 4:
             return "*" * len(card_number)
+
         return "*" * (len(card_number) - 4) + card_number[-4:]

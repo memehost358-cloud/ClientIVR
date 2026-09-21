@@ -33,7 +33,6 @@ class ResponseAnalyzer:
         self.security_code_prompts = [
             "enter the 3 digit security code",
             "three digit security code",
-            "security code",
             "3 digit security code"
         ]
 

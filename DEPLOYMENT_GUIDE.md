@@ -213,7 +213,7 @@ card_validation_system/
    - Security code prompt → Card valid, proceed to Phase 2
    - Invalid card → Card number issue
    - Verification required → Card not ready
-6. If security code prompt: validates codes 000-999
+6. If security code prompt: records and analyzes the security-code stage; automated candidate testing is not enabled
 7. Generates validation and compliance reports
 
 ### **Technical Flow**

@@ -31,11 +31,6 @@ class Config:
     signalwire_account_sid: str
     signalwire_auth_token: str
     signalwire_phone_number: str
-    
-    # SIP Trunk Configuration (Twilio - Optional)
-    twilio_account_sid: str
-    twilio_auth_token: str
-    twilio_phone_number: str
 
     # Transcription Configuration (ElevenLabs)
     elevenlabs_api_key: str
@@ -75,14 +70,9 @@ class Config:
             card_number=os.getenv('CARD_NUMBER', ''),
 
             # SignalWire credentials (primary)
-            signalwire_account_sid=os.getenv('SIGNALWIRE_ACCOUNT_SID', os.getenv('TWILIO_ACCOUNT_SID', '')),
-            signalwire_auth_token=os.getenv('SIGNALWIRE_AUTH_TOKEN', os.getenv('TWILIO_AUTH_TOKEN', '')),
-            signalwire_phone_number=os.getenv('SIGNALWIRE_PHONE_NUMBER', os.getenv('TWILIO_PHONE_NUMBER', '')),
-            
-            # Twilio credentials (fallback)
-            twilio_account_sid=os.getenv('TWILIO_ACCOUNT_SID', ''),
-            twilio_auth_token=os.getenv('TWILIO_AUTH_TOKEN', ''),
-            twilio_phone_number=os.getenv('TWILIO_PHONE_NUMBER', ''),
+            signalwire_account_sid=os.getenv('SIGNALWIRE_ACCOUNT_SID', ''),
+            signalwire_auth_token=os.getenv('SIGNALWIRE_AUTH_TOKEN', ''),
+            signalwire_phone_number=os.getenv('SIGNALWIRE_PHONE_NUMBER', ''),
 
             elevenlabs_api_key=os.getenv('ELEVENLABS_API_KEY', ''),
 
@@ -110,8 +100,6 @@ class Config:
         required_fields = [
             ('IVR_PHONE_NUMBER', self.ivr_phone_number),
             ('CARD_NUMBER', self.card_number),
-            ('TWILIO_ACCOUNT_SID', self.twilio_account_sid),
-            ('TWILIO_AUTH_TOKEN', self.twilio_auth_token),
             ('ELEVENLABS_API_KEY', self.elevenlabs_api_key),
             ('AMI_SECRET', self.ami_secret),
         ]
