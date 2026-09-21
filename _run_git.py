@@ -1,6 +1,8 @@
 import subprocess, os, sys
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
+base = os.path.dirname(os.path.abspath(__file__))
+os.chdir(base)
+out_path = os.path.join(base, "_git_output.log")
 
 cmds = [
     ("1. git status --porcelain", ["git", "status", "--porcelain"]),
@@ -11,14 +13,19 @@ cmds = [
     ("6. git push origin main", ["git", "push", "origin", "main"]),
 ]
 
-for label, args in cmds:
-    print("=== " + label + " ===")
-    sys.stdout.flush()
-    r = subprocess.run(args, capture_output=True, text=True)
-    if r.stdout:
-        sys.stdout.write(r.stdout)
-    if r.stderr:
-        sys.stderr.write(r.stderr)
-    print("[exit " + str(r.returncode) + "]")
-    print()
-    sys.stdout.flush()
+with open(out_path, "w", encoding="utf-8") as f:
+    for label, args in cmds:
+        f.write("=== " + label + " ===\n")
+        r = subprocess.run(args, capture_output=True, text=True)
+        if r.stdout:
+            f.write(r.stdout)
+            if not r.stdout.endswith("\n"):
+                f.write("\n")
+        if r.stderr:
+            f.write(r.stderr)
+            if not r.stderr.endswith("\n"):
+                f.write("\n")
+        f.write("[exit " + str(r.returncode) + "]\n\n")
+    f.write("DONE\n")
+
+print("Output written to", out_path)
