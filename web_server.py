@@ -1,118 +1,70 @@
 #!/usr/bin/env python3
 """
-SignalWire Voice XML Web Server
+Local Web Server (optional admin UI / status helper).
 
-Serves LAML (Voice XML) instructions for SignalWire calls.
-Handles call flow for card validation and security code entry.
+With the switch to local Asterisk AMI originate this server is NO LONGER
+used to steer active calls. It remains available for:
+  - GET  /health        -> 200 OK (process alive)
+  - GET  /status        -> read-only view of state.json (if exists)
+  - GET  /voice.xml     -> returns a harmless no-op LAML (keeps endpoint alive)
+
+All hardcoded callerIds, phone numbers and private IPs previously embedded
+in XML templates have been removed. The system now configures itself from
+.env through the `Config` class.
 """
 
 from flask import Flask, request, Response
+import json
 import logging
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
 app = Flask(__name__)
-
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@app.route('/voice.xml', methods=['GET', 'POST'])
+STATE_FILE = Path(os.getenv("STATE_FILE", "/var/lib/card-validation-system/state.json"))
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return Response(
+        json.dumps({"status": "ok", "service": "card-validation-web"}),
+        mimetype="application/json",
+        status=200,
+    )
+
+
+@app.route("/status", methods=["GET"])
+def show_status():
+    payload: dict = {"state_file": str(STATE_FILE), "exists": STATE_FILE.exists()}
+    if STATE_FILE.exists():
+        try:
+            payload["state"] = json.loads(STATE_FILE.read_text())
+        except Exception as e:
+            payload["error"] = f"Cannot read state file: {e}"
+    return Response(json.dumps(payload, indent=2), mimetype="application/json")
+
+
+@app.route("/voice.xml", methods=["GET", "POST"])
 def voice_xml():
-    """Generate Voice XML for call flow."""
-    card_number = request.args.get('card_number', '')
-    security_code = request.args.get('security_code', '')
-    call_stage = request.args.get('stage', 'card_entry')
-    
-    logger.info(f"Voice XML request - Stage: {call_stage}, Card: {card_number[-4:] if card_number else 'N/A'}")
-    
-    if call_stage == 'card_entry':
-        return generate_card_entry_xml(card_number)
-    elif call_stage == 'security_code':
-        return generate_security_code_xml(security_code)
-    else:
-        return generate_welcome_xml()
-
-def generate_welcome_xml():
-    """Generate welcome message."""
-    xml = '''<?xml version="1.0" encoding="UTF-8"?>
+    """
+    Harmless no-op. The active call flow now goes through Asterisk Originate
+    + local dialplan in asterisk/extensions.conf (not LAML). Kept so any
+    legacy URL does not 404.
+    """
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Gather timeout="10" numDigits="16" action="/process_card" method="POST">
-        <Say>Please enter your 16 digit card number.</Say>
-    </Gather>
-    <Say>I did not receive your card number. Goodbye.</Say>
     <Hangup/>
-</Response>'''
-    return Response(xml, mimetype='application/xml')
+</Response>"""
+    return Response(xml, mimetype="application/xml")
 
-def generate_card_entry_xml(card_number):
-    """Generate XML for card number entry."""
-    xml = f'''<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>Calling card validation system. Card number ending in {card_number[-4:]}.</Say>
-    <Dial callerId="+12082473014">18003679617</Dial>
-    <Pause length="5"/>
-    <Gather timeout="10" numDigits="16" action="/process_card" method="POST">
-        <Say>Please enter your 16 digit card number.</Say>
-    </Gather>
-    <Say>I did not receive your card number. Goodbye.</Say>
-    <Hangup/>
-</Response>'''
-    return Response(xml, mimetype='application/xml')
 
-def generate_security_code_xml(security_code):
-    """Generate XML for security code entry."""
-    xml = f'''<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>Entering security code.</Say>
-    <Gather timeout="10" numDigits="3" action="/process_security" method="POST">
-        <Say>Please enter your 3 digit security code.</Say>
-    </Gather>
-    <Say>I did not receive your security code. Goodbye.</Say>
-    <Hangup/>
-</Response>'''
-    return Response(xml, mimetype='application/xml')
-
-@app.route('/process_card', methods=['POST'])
-def process_card():
-    """Process card number entry."""
-    digits = request.form.get('Digits', '')
-    logger.info(f"Card digits received: {digits}")
-    
-    # Generate XML to wait for IVR response
-    xml = '''<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>Card number submitted. Waiting for response.</Say>
-    <Pause length="10"/>
-    <Say>Call completed. Goodbye.</Say>
-    <Hangup/>
-</Response>'''
-    return Response(xml, mimetype='application/xml')
-
-@app.route('/process_security', methods=['POST'])
-def process_security():
-    """Process security code entry."""
-    digits = request.form.get('Digits', '')
-    logger.info(f"Security code received: {digits}")
-    
-    xml = '''<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>Security code submitted. Waiting for response.</Say>
-    <Pause length="10"/>
-    <Say>Call completed. Goodbye.</Say>
-    <Hangup/>
-</Response>'''
-    return Response(xml, mimetype='application/xml')
-
-@app.route('/status/<call_id>', methods=['POST'])
-def call_status(call_id):
-    """Handle call status callbacks."""
-    status = request.form.get('CallStatus', '')
-    logger.info(f"Call {call_id} status: {status}")
-    return Response('', status=200)
-
-if __name__ == '__main__':
-    logger.info("Starting SignalWire Voice XML Server on port 5000")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+if __name__ == "__main__":
+    port = int(os.getenv("WEB_PORT", "5000"))
+    host = os.getenv("WEB_HOST", "0.0.0.0")
+    logger.info(f"Starting admin web server on {host}:{port}")
+    app.run(host=host, port=port, debug=False)

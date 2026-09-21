@@ -2,123 +2,398 @@
 """
 Configuration Management
 
-Handles loading and validating configuration from environment variables.
+Everything comes from environment variables. No hardcoded numbers,
+phrases, timings, or provider names.
+
+Exports:
+  Config            - system-wide settings
+  IVRProfile        - per-target-IVR: phone number + timings + phrases
+  ProviderSpec      - per-SIP-trunk: Asterisk endpoint + callerId
+  CardSpec          - one card: number + optional cvv_start + phase-2 extras
+  load_card_inventory() -> list[CardSpec]
 """
 
+from __future__ import annotations
+
+import csv
+import io
+import json
 import os
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
+# ----------------------------- Phrase helpers -----------------------------
+
+
+def _split_csv(value: Optional[str]) -> List[str]:
+    """Split comma-separated phrases, trimming, dropping empties, lowering."""
+    if not value:
+        return []
+    out: List[str] = []
+    # Use csv.reader so commas inside quoted phrases could be supported in future.
+    for row in csv.reader(io.StringIO(value)):
+        for cell in row:
+            cell = cell.strip().lower()
+            if cell:
+                out.append(cell)
+    return out
+
+
+# ------------------------------- IVRProfile -------------------------------
+
+
+@dataclass
+class IVRProfile:
+    """Per-target-IVR configuration. All values come from env + IVR_PROFILE_ID."""
+
+    profile_id: str
+    ivr_phone_number: str
+
+    # DTMF / call flow timings (seconds unless *_MS)
+    wait_after_connect_s: float = 2.0
+    wait_after_card_digits_s: float = 6.0
+    wait_after_cvv_digits_s: float = 5.0
+    dtmf_digit_on_ms: int = 100
+    dtmf_inter_digit_ms: int = 200
+    max_call_wait_s: int = 45
+
+    # Classification phrases (substring match, case-insensitive)
+    phrases_card_prompt: List[str] = field(default_factory=list)
+    phrases_cvv_prompt: List[str] = field(default_factory=list)
+    phrases_invalid_card: List[str] = field(default_factory=list)
+    phrases_verification_required: List[str] = field(default_factory=list)
+    phrases_valid_code: List[str] = field(default_factory=list)
+    phrases_invalid_code: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_env(cls) -> "IVRProfile":
+        pid = os.getenv("IVR_PROFILE_ID", "default")
+        return cls(
+            profile_id=pid,
+            ivr_phone_number=os.getenv("IVR_PHONE_NUMBER", "").strip(),
+            wait_after_connect_s=float(os.getenv("WAIT_AFTER_CONNECT_S", "2")),
+            wait_after_card_digits_s=float(os.getenv("WAIT_AFTER_CARD_DIGITS_S", "6")),
+            wait_after_cvv_digits_s=float(os.getenv("WAIT_AFTER_CVV_DIGITS_S", "5")),
+            dtmf_digit_on_ms=int(os.getenv("DTMF_DIGIT_ON_MS", "100")),
+            dtmf_inter_digit_ms=int(os.getenv("DTMF_INTER_DIGIT_MS", "200")),
+            max_call_wait_s=int(os.getenv("MAX_CALL_WAIT_S", "45")),
+            phrases_card_prompt=_split_csv(os.getenv("PHRASES_CARD_PROMPT")) or [
+                "please enter your 16 digit card number",
+                "enter your card number",
+                "digit card number",
+            ],
+            phrases_cvv_prompt=_split_csv(os.getenv("PHRASES_CVV_PROMPT")) or [
+                "enter the 3 digit security code",
+                "three digit security code",
+                "security code",
+                "3 digit security code",
+                "cvv",
+            ],
+            phrases_invalid_card=_split_csv(os.getenv("PHRASES_INVALID_CARD")) or [
+                "card number does not exist",
+                "invalid card number",
+                "card is invalid",
+                "not a valid card number",
+            ],
+            phrases_verification_required=_split_csv(
+                os.getenv("PHRASES_VERIFICATION_REQUIRED")
+            ) or [
+                "one time verification code",
+                "confirm your identity",
+                "text you a code",
+                "verification code",
+                "send you a text",
+            ],
+            phrases_valid_code=_split_csv(os.getenv("PHRASES_VALID_CODE")) or [
+                "activated",
+                "successful",
+                "complete",
+                "thank you",
+                "your card has been activated",
+                "activation complete",
+                "card is now active",
+            ],
+            phrases_invalid_code=_split_csv(os.getenv("PHRASES_INVALID_CODE")) or [
+                "invalid security code",
+                "incorrect security code",
+                "wrong code",
+                "cvv is incorrect",
+                "security code does not match",
+                "please try again",
+                "code does not match",
+            ],
+        )
+
+
+# ------------------------------ ProviderSpec ------------------------------
+
+
+@dataclass
+class ProviderSpec:
+    """One SIP trunk provider used via local Asterisk SIP endpoint."""
+
+    name: str
+    endpoint: str  # SIP endpoint name in chan_sip / chan_pjsip
+    caller_id_num: str  # outbound CLI number
+
+    # Credentials (not needed for Asterisk trunk since Asterisk holds them),
+    # but kept for status reporting + provider rotation heuristics if needed.
+    account_sid: str = ""
+    auth_token: str = ""
+    phone_number: str = ""
+
+
+@dataclass
+class ProviderPolicy:
+    """Ordered list of providers + failover threshold."""
+
+    order: List[ProviderSpec]
+    failover_consecutive_failures: int = 3
+
+    def validate(self) -> List[str]:
+        errors: List[str] = []
+        if not self.order:
+            errors.append("PROVIDER_ORDER list is empty")
+            return errors
+        for p in self.order:
+            if not p.endpoint or p.endpoint.lower().startswith("your_"):
+                errors.append(f"PROV_ENDPOINT_{p.name.upper()} missing or placeholder")
+            if not p.caller_id_num or p.caller_id_num.lower().startswith("your_"):
+                errors.append(f"PROV_CALLERID_{p.name.upper()} missing or placeholder")
+        return errors
+
+
+def _build_provider_policy_from_env() -> ProviderPolicy:
+    order_raw = os.getenv("PROVIDER_ORDER", "signalwire,twilio")
+    names = [n.strip().lower() for n in order_raw.split(",") if n.strip()]
+
+    lookup_credentials = {
+        "signalwire": (
+            os.getenv("SIGNALWIRE_ACCOUNT_SID", ""),
+            os.getenv("SIGNALWIRE_AUTH_TOKEN", ""),
+            os.getenv("SIGNALWIRE_PHONE_NUMBER", ""),
+        ),
+        "twilio": (
+            os.getenv("TWILIO_ACCOUNT_SID", ""),
+            os.getenv("TWILIO_AUTH_TOKEN", ""),
+            os.getenv("TWILIO_PHONE_NUMBER", ""),
+        ),
+    }
+
+    providers: List[ProviderSpec] = []
+    for name in names:
+        up = name.upper()
+        sid, tok, pn = lookup_credentials.get(name, ("", "", ""))
+        providers.append(
+            ProviderSpec(
+                name=name,
+                endpoint=os.getenv(f"PROV_ENDPOINT_{up}", name).strip(),
+                caller_id_num=os.getenv(f"PROV_CALLERID_{up}", "").strip(),
+                account_sid=sid,
+                auth_token=tok,
+                phone_number=pn,
+            )
+        )
+
+    failover = int(os.getenv("PROVIDER_FAILOVER_FAILED_CALLS", "3"))
+    return ProviderPolicy(order=providers, failover_consecutive_failures=failover)
+
+
+# ------------------------------- CardSpec / inventory ------------------------------
+
+
+@dataclass
+class CardSpec:
+    number: str
+    cvv_start: int = 0
+    expiry_mmyy: Optional[str] = None
+    dob_mmyy: Optional[str] = None
+    phone: Optional[str] = None
+
+    def masked(self) -> str:
+        if len(self.number) <= 4:
+            return "*" * len(self.number)
+        return "*" * (len(self.number) - 4) + self.number[-4:]
+
+    @classmethod
+    def from_dict(cls, obj: Dict[str, Any]) -> "CardSpec":
+        num = (str(obj.get("number") or obj.get("card_number") or "")).strip()
+        cvv_start_raw = obj.get("cvv_start", 0)
+        try:
+            cvv_start = int(cvv_start_raw)
+        except (TypeError, ValueError):
+            cvv_start = 0
+        return cls(
+            number=num,
+            cvv_start=max(0, min(999, cvv_start)),
+            expiry_mmyy=(str(obj["expiry_mmyy"]) if obj.get("expiry_mmyy") else None),
+            dob_mmyy=(str(obj["dob_mmyy"]) if obj.get("dob_mmyy") else None),
+            phone=(str(obj["phone"]) if obj.get("phone") else None),
+        )
+
+
+def load_card_inventory_from_env() -> List[CardSpec]:
+    """Load cards from env. Priority: CARDS_JSON > CARD_NUMBERS_CSV > CARD_NUMBER.
+
+    Falls back to legacy env var CARD_NUMBER + default CARD_CVV_START.
+    """
+    json_path = (os.getenv("CARDS_JSON") or "").strip()
+    if json_path:
+        p = Path(json_path)
+        if not p.exists():
+            raise FileNotFoundError(f"CARDS_JSON referenced but file missing: {json_path}")
+        data = json.loads(p.read_text())
+        if not isinstance(data, list):
+            raise ValueError("CARDS_JSON must contain a JSON array of card objects")
+        cards = [CardSpec.from_dict(o) for o in data]
+        if not cards:
+            raise ValueError("CARDS_JSON array is empty")
+        return cards
+
+    csv_raw = (os.getenv("CARD_NUMBERS_CSV") or "").strip()
+    if csv_raw:
+        default_start = int(os.getenv("CARD_CVV_START", "0") or 0)
+        numbers = [n.strip() for n in csv_raw.split(",") if n.strip()]
+        cards = [CardSpec(number=n, cvv_start=default_start) for n in numbers]
+        if not cards:
+            raise ValueError("CARD_NUMBERS_CSV is set but empty")
+        return cards
+
+    # Legacy / backwards compatible: single CARD_NUMBER
+    num = (os.getenv("CARD_NUMBER") or "").strip()
+    if not num:
+        return []
+    default_start = int(os.getenv("CARD_CVV_START", "0") or 0)
+    return [CardSpec(number=num, cvv_start=default_start)]
+
+
+# --------------------------------- Config ---------------------------------
+
+
 @dataclass
 class Config:
-    """System configuration from environment variables."""
+    """Top-level configuration composed from env and the sub-objects above."""
 
-    # Company Information
+    # Company / system
     company_name: str
     system_name: str
     operated_by: str
     contact_email: str
 
-    # IVR Configuration
-    ivr_phone_number: str
-    card_number: str
+    # Public base URL (for status links only, no longer used to steer calls)
+    public_base_url: str
 
-    # SIP Trunk Configuration (SignalWire)
-    signalwire_account_sid: str
-    signalwire_auth_token: str
-    signalwire_phone_number: str
-    
-    # SIP Trunk Configuration (Twilio - Optional)
-    twilio_account_sid: str
-    twilio_auth_token: str
-    twilio_phone_number: str
-
-    # Transcription Configuration (ElevenLabs)
-    elevenlabs_api_key: str
-
-    # Asterisk AMI Configuration
+    # AMI (calls routed through local Asterisk)
     ami_host: str
     ami_port: int
     ami_username: str
     ami_secret: str
 
-    # System Configuration
+    # Transcription
+    elevenlabs_api_key: str
+
+    # Rates / limits
     max_daily_calls: int
     rate_limit_calls_per_hour: int
-    call_cooldown_seconds: int
+    call_cooldown_seconds: float
     max_security_attempts_per_call: int
 
-    # Storage Configuration
+    # Storage
     results_dir: str
     recordings_dir: str
     state_file: str
     log_dir: str
 
-    # Security Configuration
+    # Security
     mask_card_numbers: bool
     emergency_stop_on_detection: bool
 
-    @classmethod
-    def from_env(cls) -> 'Config':
-        """Load configuration from environment variables."""
-        return cls(
-            company_name=os.getenv('COMPANY_NAME', 'UnknownCardCompany'),
-            system_name=os.getenv('SYSTEM_NAME', 'CardActivationSystem'),
-            operated_by=os.getenv('OPERATED_BY', 'CardOperationsTeam'),
-            contact_email=os.getenv('CONTACT_EMAIL', ''),
-
-            ivr_phone_number=os.getenv('IVR_PHONE_NUMBER', ''),
-            card_number=os.getenv('CARD_NUMBER', ''),
-
-            # SignalWire credentials (primary)
-            signalwire_account_sid=os.getenv('SIGNALWIRE_ACCOUNT_SID', os.getenv('TWILIO_ACCOUNT_SID', '')),
-            signalwire_auth_token=os.getenv('SIGNALWIRE_AUTH_TOKEN', os.getenv('TWILIO_AUTH_TOKEN', '')),
-            signalwire_phone_number=os.getenv('SIGNALWIRE_PHONE_NUMBER', os.getenv('TWILIO_PHONE_NUMBER', '')),
-            
-            # Twilio credentials (fallback)
-            twilio_account_sid=os.getenv('TWILIO_ACCOUNT_SID', ''),
-            twilio_auth_token=os.getenv('TWILIO_AUTH_TOKEN', ''),
-            twilio_phone_number=os.getenv('TWILIO_PHONE_NUMBER', ''),
-
-            elevenlabs_api_key=os.getenv('ELEVENLABS_API_KEY', ''),
-
-            ami_host=os.getenv('AMI_HOST', '127.0.0.1'),
-            ami_port=int(os.getenv('AMI_PORT', '5038')),
-            ami_username=os.getenv('AMI_USERNAME', 'cardvalidator'),
-            ami_secret=os.getenv('AMI_SECRET', ''),
-
-            max_daily_calls=int(os.getenv('MAX_DAILY_CALLS', '100')),
-            rate_limit_calls_per_hour=int(os.getenv('RATE_LIMIT_CALLS_PER_HOUR', '10')),
-            call_cooldown_seconds=int(os.getenv('CALL_COOLDOWN_SECONDS', '30')),
-            max_security_attempts_per_call=int(os.getenv('MAX_SECURITY_ATTEMPTS_PER_CALL', '3')),
-
-            results_dir=os.getenv('RESULTS_DIR', '/var/lib/card-validation-system/results'),
-            recordings_dir=os.getenv('RECORDINGS_DIR', '/var/spool/asterisk/recordings'),
-            state_file=os.getenv('STATE_FILE', '/var/lib/card-validation-system/state.json'),
-            log_dir=os.getenv('LOG_DIR', '/var/log/card-validation-system'),
-
-            mask_card_numbers=os.getenv('MASK_CARD_NUMBERS', 'true').lower() == 'true',
-            emergency_stop_on_detection=os.getenv('EMERGENCY_STOP_ON_DETECTION', 'true').lower() == 'true',
-        )
+    # Composed sub-configs
+    ivr_profile: IVRProfile
+    provider_policy: ProviderPolicy
 
     def validate(self) -> bool:
-        """Validate that required configuration is present."""
-        required_fields = [
-            ('IVR_PHONE_NUMBER', self.ivr_phone_number),
-            ('CARD_NUMBER', self.card_number),
-            ('TWILIO_ACCOUNT_SID', self.twilio_account_sid),
-            ('TWILIO_AUTH_TOKEN', self.twilio_auth_token),
-            ('ELEVENLABS_API_KEY', self.elevenlabs_api_key),
-            ('AMI_SECRET', self.ami_secret),
-        ]
+        errors: List[str] = []
 
-        for field_name, field_value in required_fields:
-            if not field_value or field_value.startswith('your_') or field_value.startswith('YOUR_'):
-                print(f"ERROR: {field_name} is not configured properly")
-                return False
+        def _err(name: str, value: str):
+            if not value or value.lower().startswith("your_"):
+                errors.append(name)
 
+        _err("IVR_PHONE_NUMBER (under IVRProfile)", self.ivr_profile.ivr_phone_number)
+        _err("ELEVENLABS_API_KEY", self.elevenlabs_api_key)
+        _err("AMI_SECRET", self.ami_secret)
+
+        errors.extend(self.provider_policy.validate())
+
+        # At least one provider must have credentials set (so Asterisk's own
+        # registration will actually succeed). It's okay to have 1 of N set.
+        any_creds = any(
+            (p.account_sid and not p.account_sid.lower().startswith("your_"))
+            and (p.auth_token and not p.auth_token.lower().startswith("your_"))
+            for p in self.provider_policy.order
+        )
+        if not any_creds:
+            errors.append(
+                "SIP TRUNK CREDENTIALS: set either SIGNALWIRE_ACCOUNT_SID/AUTH_TOKEN "
+                "or TWILIO_ACCOUNT_SID/AUTH_TOKEN (or both) in .env"
+            )
+
+        try:
+            cards = load_card_inventory_from_env()
+            if not cards:
+                errors.append(
+                    "CARD INVENTORY: set at least one of CARD_NUMBER, "
+                    "CARD_NUMBERS_CSV, or CARDS_JSON"
+                )
+        except Exception as e:
+            errors.append(f"CARD INVENTORY ERROR: {e}")
+
+        if errors:
+            for e in errors:
+                print(f"ERROR: {e}")
+            return False
         return True
+
+    @classmethod
+    def from_env(cls) -> "Config":
+        return cls(
+            company_name=os.getenv("COMPANY_NAME", "UnknownCardCompany"),
+            system_name=os.getenv("SYSTEM_NAME", "CardActivationSystem"),
+            operated_by=os.getenv("OPERATED_BY", "CardOperationsTeam"),
+            contact_email=os.getenv("CONTACT_EMAIL", ""),
+            public_base_url=os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:5000").rstrip("/"),
+            ami_host=os.getenv("AMI_HOST", "127.0.0.1"),
+            ami_port=int(os.getenv("AMI_PORT", "5038")),
+            ami_username=os.getenv("AMI_USERNAME", "cardvalidator"),
+            ami_secret=os.getenv("AMI_SECRET", ""),
+            elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", ""),
+            max_daily_calls=int(os.getenv("MAX_DAILY_CALLS", "100")),
+            rate_limit_calls_per_hour=int(os.getenv("RATE_LIMIT_CALLS_PER_HOUR", "10")),
+            call_cooldown_seconds=float(os.getenv("CALL_COOLDOWN_SECONDS", "30")),
+            max_security_attempts_per_call=int(
+                os.getenv("MAX_SECURITY_ATTEMPTS_PER_CALL", "3")
+            ),
+            results_dir=os.getenv(
+                "RESULTS_DIR", "/var/lib/card-validation-system/results"
+            ),
+            recordings_dir=os.getenv(
+                "RECORDINGS_DIR", "/home/ubuntu/ClientIVR/recordings"
+            ),
+            state_file=os.getenv(
+                "STATE_FILE", "/var/lib/card-validation-system/state.json"
+            ),
+            log_dir=os.getenv("LOG_DIR", "/var/log/card-validation-system"),
+            mask_card_numbers=os.getenv("MASK_CARD_NUMBERS", "true").lower() == "true",
+            emergency_stop_on_detection=os.getenv(
+                "EMERGENCY_STOP_ON_DETECTION", "true"
+            ).lower()
+            == "true",
+            ivr_profile=IVRProfile.from_env(),
+            provider_policy=_build_provider_policy_from_env(),
+        )

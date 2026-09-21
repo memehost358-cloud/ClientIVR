@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
 """
-Response Analyzer - Classifies IVR responses
+Response Analyzer - Classifies IVR responses.
 
-Analyzes transcribed IVR responses to determine card validation status
-and security code validity.
+NO hardcoded classification phrases live here. All keyword lists come from
+the IVRProfile passed at construction time (IVRProfile itself is loaded
+100% from environment variables by config.IVRProfile.from_env()).
+
+This means to tune matching for a new IVR or a slightly different prompt,
+you only change PHRASES_* in .env.
 """
+
+from __future__ import annotations
 
 import logging
 from enum import Enum
 from typing import Optional
-from config import Config
+
+from config import IVRProfile
 
 
 class ResponseCategory(Enum):
-    """Categories for IVR responses."""
     SECURITY_CODE_PROMPT = "security_code_prompt"
     INVALID_CARD = "invalid_card"
     VERIFICATION_REQUIRED = "verification_required"
@@ -23,91 +29,71 @@ class ResponseCategory(Enum):
 
 
 class ResponseAnalyzer:
-    """Analyzes IVR responses for card validation."""
+    """Analyzes IVR transcripts using keyword lists from IVRProfile."""
 
-    def __init__(self, config: Config):
-        self.config = config
-        self.logger = logging.getLogger(__name__)
+    def __init__(self, profile: IVRProfile, logger: Optional[logging.Logger] = None):
+        self.profile = profile
+        self.logger = logger or logging.getLogger(self.__class__.__name__)
 
-        # Response phrases
-        self.security_code_prompts = [
-            "enter the 3 digit security code",
-            "three digit security code",
-            "security code",
-            "3 digit security code"
-        ]
-
-        self.invalid_card_phrases = [
-            "card number does not exist",
-            "invalid card number",
-            "card is invalid"
-        ]
-
-        self.verification_phrases = [
-            "one time verification code",
-            "confirm your identity",
-            "text you a code",
-            "verification code"
-        ]
-
-        self.valid_code_responses = [
-            "activated",
-            "successful",
-            "complete",
-            "thank you"
-        ]
-
-        self.invalid_code_responses = [
-            "invalid security code",
-            "incorrect security code",
-            "wrong code"
-        ]
+    # ---------- Phase 1: after entering card number ----------
 
     def classify_card_response(self, transcript: str) -> ResponseCategory:
-        """Classify the IVR response after card number entry."""
         if not transcript:
             return ResponseCategory.UNEXPECTED_RESPONSE
 
-        transcript_lower = transcript.lower()
+        t = transcript.lower()
 
-        # Check for security code prompt
-        for phrase in self.security_code_prompts:
-            if phrase.lower() in transcript_lower:
-                self.logger.info(f"Security code prompt detected: '{phrase}'")
+        # Priority order matters. CVV prompt means the card was accepted so
+        # it must be checked before "invalid / verification required" phrases
+        # even if both accidentally match.
+        for phrase in self.profile.phrases_cvv_prompt:
+            if phrase and phrase in t:
+                self.logger.info(f"MATCH [cvv_prompt]: '{phrase}'")
                 return ResponseCategory.SECURITY_CODE_PROMPT
 
-        # Check for invalid card
-        for phrase in self.invalid_card_phrases:
-            if phrase.lower() in transcript_lower:
-                self.logger.info(f"Invalid card response detected: '{phrase}'")
+        for phrase in self.profile.phrases_invalid_card:
+            if phrase and phrase in t:
+                self.logger.info(f"MATCH [invalid_card]: '{phrase}'")
                 return ResponseCategory.INVALID_CARD
 
-        # Check for verification required
-        for phrase in self.verification_phrases:
-            if phrase.lower() in transcript_lower:
-                self.logger.info(f"Verification required detected: '{phrase}'")
+        for phrase in self.profile.phrases_verification_required:
+            if phrase and phrase in t:
+                self.logger.info(f"MATCH [verification_required]: '{phrase}'")
                 return ResponseCategory.VERIFICATION_REQUIRED
 
-        self.logger.warning(f"Unexpected response: {transcript[:200]}")
+        self.logger.warning(
+            f"UNCLASSIFIED (Phase 1) transcript[:200]={transcript[:200]!r}"
+        )
         return ResponseCategory.UNEXPECTED_RESPONSE
 
+    # ---------- Phase 2: after entering one CVV candidate ----------
+
     def classify_security_code_response(self, transcript: str) -> bool:
-        """Classify the IVR response after security code entry."""
+        """Return True when transcript indicates the *correct* CVV was accepted.
+
+        On any ambiguity (neither explicit success nor explicit invalid),
+        return False - better to try next code than falsely stop the loop.
+        """
         if not transcript:
             return False
 
-        transcript_lower = transcript.lower()
+        t = transcript.lower()
 
-        # Check for valid code (success)
-        for phrase in self.valid_code_responses:
-            if phrase.lower() in transcript_lower:
-                self.logger.info(f"Valid security code detected: '{phrase}'")
+        # Explicit success phrases -> return True immediately
+        for phrase in self.profile.phrases_valid_code:
+            if phrase and phrase in t:
+                self.logger.info(f"MATCH [valid_cvv]: '{phrase}'")
                 return True
 
-        # Check for invalid code
-        for phrase in self.invalid_code_responses:
-            if phrase.lower() in transcript_lower:
-                self.logger.info(f"Invalid security code detected: '{phrase}'")
+        # Explicit invalid phrases -> return False
+        for phrase in self.profile.phrases_invalid_code:
+            if phrase and phrase in t:
+                self.logger.info(f"MATCH [invalid_cvv]: '{phrase}'")
                 return False
 
+        # No strong signal -> conservative false
+        self.logger.info(
+            f"No explicit success/invalid phrase; treating CVV as INVALID "
+            f"(transcript[:160]={transcript[:160]!r})"
+        )
         return False
