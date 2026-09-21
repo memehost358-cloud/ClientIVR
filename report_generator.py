@@ -32,9 +32,9 @@ class ReportGenerator:
             "results": results,
             "summary": {
                 "card_valid": results.get("success", False),
-                "security_code_required": results.get("card_result", {}).get("state") == "security_code_required",
+                "security_code_required": (results.get("card_result") or {}).get("state") == "security_code_required",
                 "valid_code": results.get("valid_code"),
-                "total_attempts": len(results.get("security_result", {}).get("attempts", [])),
+                "total_attempts": len((results.get("security_result") or {}).get("attempts", [])),
             }
         }
 

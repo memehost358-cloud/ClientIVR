@@ -288,11 +288,17 @@ class IVRClient:
             "Context": "card-validation",
             "Exten": "s",
             "Priority": "1",
-            "CallerID": f"CardValidation <{provider.caller_id_num or '0000000000'}>",
             "Timeout": str(int(max(15, min(90, int(self.profile.max_call_wait_s))) * 1000)),
             "Async": "false",
             "Variable": variables,
         }
+        if provider.caller_id_num:
+            action["CallerID"] = f"CardValidation <{provider.caller_id_num}>"
+        else:
+            self.logger.debug(
+                f"Provider '{provider.name}': no PROV_CALLERID set; "
+                "omitting CallerID from Originate (Asterisk/peer default will be used)."
+            )
 
         self.logger.info(
             f"[provider={provider.name} trunk={provider.endpoint}] "
@@ -323,6 +329,18 @@ class IVRClient:
 
         ok, msg = self._check_success(resp)
         if not ok:
+            try:
+                if isinstance(resp, list) and resp:
+                    resp_dump = dict(resp[0]) if hasattr(resp[0], "get") else str(resp[0])
+                elif hasattr(resp, "get"):
+                    resp_dump = dict(resp)
+                else:
+                    resp_dump = str(resp)
+                self.logger.error(
+                    f"AMI Originate full response (truncated): {str(resp_dump)[:600]!r}"
+                )
+            except Exception as de:
+                self.logger.debug(f"Could not dump resp for error log: {de}")
             self._mark_originate_failure(
                 f"AMI Originate Response failed: {msg or str(resp)[:200]}"
             )
