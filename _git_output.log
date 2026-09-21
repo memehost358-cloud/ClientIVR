@@ -1,0 +1,6 @@
+﻿=== 1. git status --porcelain ===
+ M _git_output.log
+?? _run_git.ps1
+=== 2. git diff --name-only HEAD ===
+_git_output.log
+=== 3. git add -A ===
