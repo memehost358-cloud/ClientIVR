@@ -166,28 +166,28 @@ class ProviderPolicy:
         fully_valid_providers = 0
         for p in self.order:
             ok_endpoint = bool(p.endpoint and not p.endpoint.lower().startswith("your_"))
+            # Caller ID (PROV_CALLERID_*) is OPTIONAL. Asterisk will fall back to
+            # whatever default CLI the SIP trunk peer is configured to send.
             ok_callerid = bool(p.caller_id_num and not p.caller_id_num.lower().startswith("your_"))
-            if ok_endpoint and ok_callerid:
+            if ok_endpoint:
                 fully_valid_providers += 1
-            else:
-                # Only warn for incomplete providers — so SIGNALWIRE-only configs with
-                # default PROVIDER_ORDER=signalwire,twilio still pass (no Twilio callerid needed).
-                missing = []
-                if not ok_endpoint:
-                    missing.append(f"PROV_ENDPOINT_{p.name.upper()}")
                 if not ok_callerid:
-                    missing.append(f"PROV_CALLERID_{p.name.upper()}")
+                    warnings.append(
+                        f"PROVIDER '{p.name}': PROV_CALLERID_{p.name.upper()} not set. "
+                        f"Asterisk trunk default CLI will be used (this is usually fine)."
+                    )
+            else:
                 warnings.append(
-                    f"SKIPPING provider '{p.name}' (missing or placeholder: {', '.join(missing)})"
+                    f"SKIPPING provider '{p.name}' (PROV_ENDPOINT_{p.name.upper()} missing or placeholder)"
                 )
 
         if fully_valid_providers == 0:
-            # No provider is fully configured → fatal
             for w in warnings:
                 errors.append(w.replace("SKIPPING provider", "PROVIDER MISCONFIGURED"))
             errors.append(
                 "NO VALID PROVIDER IN PROVIDER_ORDER. "
-                "Set PROV_ENDPOINT_<name> + PROV_CALLERID_<name> for at least one provider in PROVIDER_ORDER."
+                "Set PROV_ENDPOINT_<name> for at least one provider in PROVIDER_ORDER "
+                "(PROV_CALLERID_<name> is optional)."
             )
         else:
             for w in warnings:
