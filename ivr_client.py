@@ -282,12 +282,20 @@ class IVRClient:
         except Exception as e:
             self.logger.warning(f"Could not create recordings dir (continuing): {e}")
 
+        # Direct SIP originate with a Gosub to the IVR-processing routine.
+        # This avoids the Local/s@card-validation/n channel-indirection that
+        # often fails with "Originate failed" when Context/Exten are also set
+        # or when the Local channel splits into two legs before Dial.
+        outbound_channel = f"SIP/{provider.endpoint}/{self.profile.ivr_phone_number}"
+        # Gosub args: 1=rec_file, 2=card_number, 3=security_code, 4=call_id
+        # (Must match card-validation-process in asterisk/extensions.conf.)
+        gosub_args = f"{rec_file},{card_number},{security_code or ''},{call_id}"
+
         action = {
             "Action": "Originate",
-            "Channel": f"Local/s@card-validation/n",
-            "Context": "card-validation",
-            "Exten": "s",
-            "Priority": "1",
+            "Channel": outbound_channel,
+            "Application": "Gosub",
+            "Data": f"card-validation-process,s,1({gosub_args})",
             "Timeout": str(int(max(15, min(90, int(self.profile.max_call_wait_s))) * 1000)),
             "Async": "false",
             "Variable": variables,
@@ -302,7 +310,7 @@ class IVRClient:
 
         self.logger.info(
             f"[provider={provider.name} trunk={provider.endpoint}] "
-            f"Originating call id={call_id} -> IVR={self.profile.ivr_phone_number} "
+            f"Originating call id={call_id} channel={outbound_channel} "
             f"card_last4={card_number[-4:] if card_number else ''} "
             f"cvv={security_code or 'N/A'} rec_file={rec_file}"
         )
