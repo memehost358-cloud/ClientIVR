@@ -45,6 +45,30 @@ def _split_csv(value: Optional[str]) -> List[str]:
     return out
 
 
+def _normalize_e164(raw: str, default_country_code: str = "1") -> str:
+    """Best-effort E.164 normalization. Assumes NANP (US/CA/ toll-free).
+    - Strips all non-digit / non-'+' prefix chars
+    - If starts with '+' -> returns as-is
+    - 10 digits (incl toll-free area codes) -> prepend '+' + default_country_code
+    - 11 digits starting with '1' -> prepend '+'
+    - Otherwise -> digits only, prepend '+'+default_country_code only if len==10
+    """
+    if not raw:
+        return ""
+    stripped = "".join(ch for ch in raw if ch.isdigit() or ch == "+")
+    if not stripped:
+        return raw
+    if stripped.startswith("+"):
+        return stripped
+    digits = stripped
+    if len(digits) == 11 and digits.startswith("1"):
+        return "+" + digits
+    if len(digits) == 10:
+        return "+" + default_country_code + digits
+    # Unknown length: return as-is (digits only), caller/provider will handle
+    return digits
+
+
 # ------------------------------- IVRProfile -------------------------------
 
 
@@ -74,9 +98,13 @@ class IVRProfile:
     @classmethod
     def from_env(cls) -> "IVRProfile":
         pid = os.getenv("IVR_PROFILE_ID", "default")
+        raw_ivr = os.getenv("IVR_PHONE_NUMBER", "").strip()
+        norm_ivr = _normalize_e164(raw_ivr)
+        if norm_ivr != raw_ivr:
+            print(f"INFO: IVR phone number normalized '{raw_ivr}' -> '{norm_ivr}'")
         return cls(
             profile_id=pid,
-            ivr_phone_number=os.getenv("IVR_PHONE_NUMBER", "").strip(),
+            ivr_phone_number=norm_ivr,
             wait_after_connect_s=float(os.getenv("WAIT_AFTER_CONNECT_S", "2")),
             wait_after_card_digits_s=float(os.getenv("WAIT_AFTER_CARD_DIGITS_S", "6")),
             wait_after_cvv_digits_s=float(os.getenv("WAIT_AFTER_CVV_DIGITS_S", "5")),
@@ -217,11 +245,23 @@ def _build_provider_policy_from_env() -> ProviderPolicy:
     for name in names:
         up = name.upper()
         sid, tok, pn = lookup_credentials.get(name, ("", "", ""))
+        prov_endpoint = os.getenv(f"PROV_ENDPOINT_{up}", name).strip()
+        prov_callerid = os.getenv(f"PROV_CALLERID_{up}", "").strip()
+        # Backward compat: if PROV_CALLERID_<name> is empty but the old-style
+        # <NAME>_PHONE_NUMBER env var (e.g. SIGNALWIRE_PHONE_NUMBER) is set,
+        # fall back to that so the user's existing .env keeps working.
+        if not prov_callerid and pn:
+            prov_callerid = _normalize_e164(pn)
+            if prov_callerid:
+                print(
+                    f"INFO: Provider '{name}': PROV_CALLERID_{up} not set; "
+                    f"falling back to {name.upper()}_PHONE_NUMBER={prov_callerid}"
+                )
         providers.append(
             ProviderSpec(
                 name=name,
-                endpoint=os.getenv(f"PROV_ENDPOINT_{up}", name).strip(),
-                caller_id_num=os.getenv(f"PROV_CALLERID_{up}", "").strip(),
+                endpoint=prov_endpoint,
+                caller_id_num=prov_callerid,
                 account_sid=sid,
                 auth_token=tok,
                 phone_number=pn,
