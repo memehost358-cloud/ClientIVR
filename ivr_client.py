@@ -221,7 +221,25 @@ class IVRClient:
 
     def _outbound_channels(self, endpoint: str, number: str) -> List[str]:
         dial_number = self._dialable_number(number)
+        # PRIMARY strategy: use a Local channel that enters [card-validation]
+        # internally and lets the DIAL command there actually place the SIP outbound.
+        # (This is how Asterisk Originate expects to work and what the
+        # Sep-29 14:40 working calls actually succeeded on this server.)
+        # Direct-SIP Originate to Application=Gosub also requires the called
+        # number to match a SIP dialpeer + endpoint but it's failing INSTANTLY
+        # "Originate failed" on both SIP/signalwire/ digits today (the
+        # exact same lines did work on Sep 29, so there may be an endpoint
+        # registration issue or an AMI/endpoint mismatch -- but Local channel always
+        # works for Originate since it just enters the dialplan context.)
+        #
+        # Ordering:
+        #   1) Local/s@card-validation/n    (PRIMARY, works for this exact box)
+        #   2) Local/s@card-validation       (no /n option just in case)
+        #   3) SIP/<endpoint>/<digits>        (FALLBACK direct SIP)
+        #   4) SIP/<endpoint>/tcp/<digits>    (FALLBACK tcp direct SIP)
         candidates = [
+            f"Local/s@card-validation/n",
+            f"Local/s@card-validation",
             f"SIP/{endpoint}/{dial_number}",
             f"SIP/{endpoint}/tcp/{dial_number}",
         ]
@@ -365,24 +383,42 @@ class IVRClient:
         outbound_channel = outbound_channels[0]
         ok = False
         for idx, outbound_channel in enumerate(outbound_channels, start=1):
-            action = {
+            # Build action according to channel DRIVER TYPE:
+            #   Local/s@card-validation/n  => requires Context/Exten/Priority action
+            #                                (enters dialplan priority; internal Dial()
+            #                                 then calls card-val-gosub as U()-macro
+            #                                 on ANSWERED leg)
+            #   SIP/peer/number OR SIP/peer/tcp/number
+            #                              => requires Application=Gosub action
+            #                                 (commit 9be6951 proven pattern,
+            #                                  runs directly on answered outbound leg)
+            base_action: Dict[str, Any] = {
                 "Action": "Originate",
                 "Channel": outbound_channel,
-                "Application": "Gosub",
-                "Data": f"card-val-gosub,s,1({gosub_args})",
                 "Timeout": str(
                     int(max(15, min(90, int(self.profile.max_call_wait_s))) * 1000)
                 ),
                 "Async": "false",
                 "Variable": variables,
             }
+            if outbound_channel.startswith("Local/"):
+                base_action["Context"] = "card-validation"
+                base_action["Exten"] = "s"
+                base_action["Priority"] = "1"
+            else:
+                base_action["Application"] = "Gosub"
+                base_action["Data"] = f"card-val-gosub,s,1({gosub_args})"
+
             if provider.caller_id_num:
-                action["CallerID"] = f"CardValidation <{provider.caller_id_num}>"
+                base_action["CallerID"] = (
+                    f"CardValidation <{provider.caller_id_num}>"
+                )
             else:
                 self.logger.debug(
                     f"Provider '{provider.name}': no PROV_CALLERID set; "
                     "omitting CallerID from Originate (Asterisk/peer default will be used)."
                 )
+            action = base_action
 
             self.logger.info(
                 f"[provider={provider.name} trunk={provider.endpoint}] "
