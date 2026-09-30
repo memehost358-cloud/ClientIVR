@@ -234,6 +234,7 @@ class IVRClient:
         # internally and lets the DIAL command there actually place the SIP outbound.
         # (This is how Asterisk Originate expects to work and what the
         # Sep-29 14:40 working calls actually succeeded on this server.)
+        #
         # Direct-SIP Originate to Application=Gosub also requires the called
         # number to match a SIP dialpeer + endpoint but it's failing INSTANTLY
         # "Originate failed" on both SIP/signalwire/ digits today (the
@@ -244,21 +245,11 @@ class IVRClient:
         # Ordering:
         #   1) Local/s@card-validation/n    (PRIMARY, works for this exact box)
         #   2) Local/s@card-validation       (no /n option just in case)
-        #   3) SIP/<endpoint>/<digits>        (FALLBACK direct SIP)
-        #   4) SIP/<endpoint>/tcp/<digits>    (FALLBACK tcp direct SIP)
         candidates = [
             f"Local/s@card-validation/n",
             f"Local/s@card-validation",
-            f"SIP/{endpoint}/{dial_number}",
-            f"SIP/{endpoint}/tcp/{dial_number}",
         ]
-        seen = set()
-        ordered: List[str] = []
-        for candidate in candidates:
-            if candidate not in seen:
-                seen.add(candidate)
-                ordered.append(candidate)
-        return ordered
+        return candidates
 
     def _wait_timeout_s(self, has_security: bool) -> int:
         base = int(self.profile.max_call_wait_s)
