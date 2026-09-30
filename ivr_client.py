@@ -341,6 +341,7 @@ class IVRClient:
             "RECORD_FILE": rec_file,
             "OUTBOUND_TRUNK": provider.endpoint,
             "CALLER_ID_NUM": provider.caller_id_num,
+            "DIAL_NUMBER": self._dialable_number(self.profile.ivr_phone_number),
             "WAIT_CONNECT_S": str(float(self.profile.wait_after_connect_s)),
             "WAIT_AFTER_CARD_S": str(float(self.profile.wait_after_card_digits_s)),
             "WAIT_AFTER_CVV_S": str(float(self.profile.wait_after_cvv_digits_s)),
