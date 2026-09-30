@@ -57,6 +57,7 @@ class IVRClient:
         self.manager: Optional[Manager] = None
         self._pending_call_id: Optional[str] = None
         self._call_done: asyncio.Event = asyncio.Event()
+        self._call_started: bool = False
         self._hangup_cause: Optional[str] = None
         self._dialstatus: Optional[str] = None
         self._originate_response: Optional[Dict[str, Any]] = None
@@ -126,6 +127,7 @@ class IVRClient:
         if not self._listeners_registered:
             self.manager.register_event("OriginateResponse", self._on_originate_response)
             self.manager.register_event("Hangup", self._on_hangup)
+            self.manager.register_event("DialBegin", self._on_dial_begin)
             self.manager.register_event("DialEnd", self._on_dial_end)
             self._listeners_registered = True
         try:
@@ -166,11 +168,18 @@ class IVRClient:
         # Call is over once the IVR hangs up our outgoing leg
         self._call_done.set()
 
+    async def _on_dial_begin(self, manager, event) -> None:
+        self.logger.info(f"DialBegin event: call started successfully")
+        # Mark that the call has started (DialBegin confirms the channel is active)
+        self._call_started = True
+
     async def _on_dial_end(self, manager, event) -> None:
         status = event.get("DialStatus", "")
         if status:
             self._dialstatus = str(status)
             self.logger.info(f"DialEnd event DialStatus={self._dialstatus}")
+            # If DialEnd is received, the call has ended (success or failure)
+            self._call_done.set()
 
     # ----------------------------- Helpers -----------------------------
 
@@ -373,6 +382,7 @@ class IVRClient:
         # Reset per-call state
         self._pending_call_id = call_id
         self._call_done.clear()
+        self._call_started = False
         self._hangup_cause = None
         self._dialstatus = None
         self._originate_response = None
@@ -380,8 +390,6 @@ class IVRClient:
         start_ts = time.time()
         resp: Any = None
         msg = ""
-        outbound_channel = outbound_channels[0]
-        ok = False
         for idx, outbound_channel in enumerate(outbound_channels, start=1):
             # Build action according to channel DRIVER TYPE:
             #   Local/s@card-validation/n  => requires Context/Exten/Priority action
@@ -395,10 +403,7 @@ class IVRClient:
             base_action: Dict[str, Any] = {
                 "Action": "Originate",
                 "Channel": outbound_channel,
-                "Timeout": str(
-                    int(max(30, min(120, int(self.profile.max_call_wait_s))) * 1000)
-                ),
-                "Async": "false",
+                "Async": "true",
                 "Variable": variables,
             }
             if outbound_channel.startswith("Local/"):
@@ -444,42 +449,50 @@ class IVRClient:
 
             try:
                 resp = await self.manager.send_action(action, timeout=180)
+                self.logger.debug(f"AMI Originate response: {resp}")
             except asyncio.TimeoutError as e:
                 self._mark_originate_failure(f"AMI send_action timeout: {e}")
-                raise
+                continue
             except Exception as e:
                 # panoramisk can raise if the connection is dead mid-action
                 self._mark_originate_failure(f"AMI send_action exception: {e}")
                 # Close dead manager so next originate triggers reconnect
                 await self.disconnect()
-                raise
+                continue
 
-            ok, msg = self._check_success(resp)
-            if ok:
-                break
-
-            self.logger.warning(
-                f"Originate attempt {idx}/{len(outbound_channels)} failed on "
-                f"{outbound_channel}: {msg or str(resp)[:200]}"
-            )
-
-        if not ok:
+            # With Async=true, the Originate response is not reliable for success/failure.
+            # Instead, wait for DialBegin (call started) or DialEnd (call failed).
+            # Reset the call_started flag for this attempt.
+            self._call_started = False
+            wait_max = 10.0  # Wait up to 10 seconds for DialBegin or DialEnd
             try:
-                if isinstance(resp, list) and resp:
-                    resp_dump = dict(resp[0]) if hasattr(resp[0], "get") else str(resp[0])
-                elif hasattr(resp, "get"):
-                    resp_dump = dict(resp)
-                else:
-                    resp_dump = str(resp)
-                self.logger.error(
-                    f"AMI Originate full response (truncated): {str(resp_dump)[:600]!r}"
+                await asyncio.wait_for(self._call_done.wait(), timeout=wait_max)
+            except asyncio.TimeoutError:
+                self.logger.warning(
+                    f"No DialBegin/DialEnd/Hangup event for {outbound_channel} within {wait_max}s"
                 )
-            except Exception as de:
-                self.logger.debug(f"Could not dump resp for error log: {de}")
+                continue
+
+            # If we got here, either DialBegin or DialEnd/Hangup was received.
+            if self._call_started:
+                # DialBegin was received: call started successfully
+                break
+            else:
+                # DialEnd or Hangup was received without DialBegin: call failed
+                self.logger.warning(
+                    f"Originate attempt {idx}/{len(outbound_channels)} failed on "
+                    f"{outbound_channel}: DialStatus={self._dialstatus or 'N/A'}"
+                )
+                continue
+
+        if not self._call_started:
+            # All attempts failed
             self._mark_originate_failure(
-                f"AMI Originate Response failed: {msg or str(resp)[:200]}"
+                f"All originate attempts failed. Last DialStatus: {self._dialstatus or 'N/A'}"
             )
-            raise Exception(f"AMI Originate Response failed: {msg or str(resp)[:200]}")
+            raise Exception(
+                f"All originate attempts failed. Last DialStatus: {self._dialstatus or 'N/A'}"
+            )
 
         # Wait for Hangup event (or safety timeout)
         wait_max = self._wait_timeout_s(has_security)
