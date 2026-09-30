@@ -363,8 +363,9 @@ class IVRClient:
             action = {
                 "Action": "Originate",
                 "Channel": outbound_channel,
-                "Application": "Gosub",
-                "Data": "card-val-gosub,s,1()",
+                "Context": "card-validation",
+                "Exten": "s",
+                "Priority": "1",
                 "Timeout": str(
                     int(max(15, min(90, int(self.profile.max_call_wait_s))) * 1000)
                 ),
