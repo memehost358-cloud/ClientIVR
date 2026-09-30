@@ -453,7 +453,7 @@ class Config:
                 "RESULTS_DIR", "/var/lib/card-validation-system/results"
             ),
             recordings_dir=os.getenv(
-                "RECORDINGS_DIR", "/home/ubuntu/ClientIVR/recordings"
+                "RECORDINGS_DIR", "/var/spool/asterisk/recordings"
             ),
             state_file=os.getenv(
                 "STATE_FILE", "/var/lib/card-validation-system/state.json"

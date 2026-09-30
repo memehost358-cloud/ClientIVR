@@ -17,9 +17,9 @@ PANORAMISK NOTES (real behaviour):
   * "Variable" accepts a dict[str,str] OR a list of "k=v" strings (NOT
     a single comma-separated string). We pass a dict.
   * The Originate action has a "Channel" (the outgoing leg), plus the
-    optional Context/Exten/Priority/Application for the B-leg. We use
-    Local/s@card-validation/n so the outgoing call itself executes
-    our dialplan (not the callee's side of the Local channel).
+    optional Context/Exten/Priority/Application for the B-leg. This
+    client uses a direct SIP originate and runs Gosub on the answered
+    outbound channel.
 
 Waits for Hangup AMI event, then polls for the .wav recording file
 written by MixMonitor in the dialplan. Returns recording_path so the
@@ -175,8 +175,63 @@ class IVRClient:
     # ----------------------------- Helpers -----------------------------
 
     def _recording_file(self, call_id: str) -> str:
-        rec_dir = self.config.recordings_dir or "/var/spool/asterisk/recordings"
-        return os.path.join(rec_dir, f"{call_id}.wav")
+        MON_DIR = "/var/spool/asterisk/monitor"
+        os.makedirs(MON_DIR, exist_ok=True)
+        return os.path.join(MON_DIR, f"ivr-{call_id}.wav")
+
+    @staticmethod
+    def _find_recording_anywhere(expected_path: str) -> str:
+        import glob as _glob
+        import shutil as _shutil
+        if os.path.exists(expected_path) and os.path.getsize(expected_path) > 44:
+            return expected_path
+        bn = os.path.basename(expected_path)
+        call_id = bn.split("ivr-", 1)[1].rsplit(".", 1)[0] if "ivr-" in bn else ""
+        search_dirs = [
+            "/var/spool/asterisk/monitor",
+            "/var/spool/asterisk/recordings",
+            "/tmp",
+        ]
+        found = []
+        for d in search_dirs:
+            if not os.path.isdir(d):
+                continue
+            for pat in (f"ivr-{call_id}*.wav", f"*{call_id}*.wav"):
+                found.extend(_glob.glob(os.path.join(d, pat)))
+        found.sort(
+            key=lambda f: os.path.getsize(f) if os.path.exists(f) else 0,
+            reverse=True,
+        )
+        for f in found:
+            if os.path.exists(f) and os.path.getsize(f) > 44:
+                try:
+                    _shutil.copy2(f, expected_path)
+                    return expected_path
+                except Exception:
+                    return f
+        return expected_path
+
+    @staticmethod
+    def _dialable_number(number: str) -> str:
+        # chan_sip peers often expect the request user part as digits only even
+        # when the logical destination is stored in E.164 form with a leading +.
+        if not number:
+            return ""
+        return "".join(ch for ch in str(number) if ch.isdigit())
+
+    def _outbound_channels(self, endpoint: str, number: str) -> List[str]:
+        dial_number = self._dialable_number(number)
+        candidates = [
+            f"SIP/{endpoint}/{dial_number}",
+            f"SIP/{endpoint}/tcp/{dial_number}",
+        ]
+        seen = set()
+        ordered: List[str] = []
+        for candidate in candidates:
+            if candidate not in seen:
+                seen.add(candidate)
+                ordered.append(candidate)
+        return ordered
 
     def _wait_timeout_s(self, has_security: bool) -> int:
         base = int(self.profile.max_call_wait_s)
@@ -282,38 +337,15 @@ class IVRClient:
         except Exception as e:
             self.logger.warning(f"Could not create recordings dir (continuing): {e}")
 
-        # Direct SIP originate with a Gosub to the IVR-processing routine.
-        # This avoids the Local/s@card-validation/n channel-indirection that
-        # often fails with "Originate failed" when Context/Exten are also set
-        # or when the Local channel splits into two legs before Dial.
-        outbound_channel = f"SIP/{provider.endpoint}/{self.profile.ivr_phone_number}"
-        # Gosub args: 1=rec_file, 2=card_number, 3=security_code, 4=call_id
-        # (Must match card-validation-process in asterisk/extensions.conf.)
-        gosub_args = f"{rec_file},{card_number},{security_code or ''},{call_id}"
-
-        action = {
-            "Action": "Originate",
-            "Channel": outbound_channel,
-            "Application": "Gosub",
-            "Data": f"card-validation-process,s,1({gosub_args})",
-            "Timeout": str(int(max(15, min(90, int(self.profile.max_call_wait_s))) * 1000)),
-            "Async": "false",
-            "Variable": variables,
-        }
-        if provider.caller_id_num:
-            action["CallerID"] = f"CardValidation <{provider.caller_id_num}>"
-        else:
-            self.logger.debug(
-                f"Provider '{provider.name}': no PROV_CALLERID set; "
-                "omitting CallerID from Originate (Asterisk/peer default will be used)."
-            )
-
-        self.logger.info(
-            f"[provider={provider.name} trunk={provider.endpoint}] "
-            f"Originating call id={call_id} channel={outbound_channel} "
-            f"card_last4={card_number[-4:] if card_number else ''} "
-            f"cvv={security_code or 'N/A'} rec_file={rec_file}"
+        # Direct SIP originate with a Gosub on the answered outbound leg.
+        # This keeps the flow aligned with the checked-in dialplan, which
+        # already contains card-validation-process and does not define the
+        # experimental helper contexts used by the abandoned Local/ flow.
+        dial_number = self._dialable_number(self.profile.ivr_phone_number)
+        outbound_channels = self._outbound_channels(
+            provider.endpoint, self.profile.ivr_phone_number
         )
+        gosub_args = ""
 
         # Reset per-call state
         self._pending_call_id = call_id
@@ -323,19 +355,60 @@ class IVRClient:
         self._originate_response = None
 
         start_ts = time.time()
-        try:
-            resp = await self.manager.send_action(action, timeout=180)
-        except asyncio.TimeoutError as e:
-            self._mark_originate_failure(f"AMI send_action timeout: {e}")
-            raise
-        except Exception as e:
-            # panoramisk can raise if the connection is dead mid-action
-            self._mark_originate_failure(f"AMI send_action exception: {e}")
-            # Close dead manager so next originate triggers reconnect
-            await self.disconnect()
-            raise
+        resp: Any = None
+        msg = ""
+        outbound_channel = outbound_channels[0]
+        ok = False
+        for idx, outbound_channel in enumerate(outbound_channels, start=1):
+            action = {
+                "Action": "Originate",
+                "Channel": outbound_channel,
+                "Application": "Gosub",
+                "Data": "card-val-gosub,s,1()",
+                "Timeout": str(
+                    int(max(15, min(90, int(self.profile.max_call_wait_s))) * 1000)
+                ),
+                "Async": "false",
+                "Variable": variables,
+            }
+            if provider.caller_id_num:
+                action["CallerID"] = f"CardValidation <{provider.caller_id_num}>"
+            else:
+                self.logger.debug(
+                    f"Provider '{provider.name}': no PROV_CALLERID set; "
+                    "omitting CallerID from Originate (Asterisk/peer default will be used)."
+                )
 
-        ok, msg = self._check_success(resp)
+            self.logger.info(
+                f"[provider={provider.name} trunk={provider.endpoint}] "
+                f"Originating call id={call_id} dest={self.profile.ivr_phone_number} "
+                f"dial={dial_number} channel={outbound_channel} "
+                f"attempt={idx}/{len(outbound_channels)} "
+                f"card_last4={card_number[-4:] if card_number else ''} "
+                f"cvv={security_code or 'N/A'} rec_file={rec_file}"
+            )
+
+            try:
+                resp = await self.manager.send_action(action, timeout=180)
+            except asyncio.TimeoutError as e:
+                self._mark_originate_failure(f"AMI send_action timeout: {e}")
+                raise
+            except Exception as e:
+                # panoramisk can raise if the connection is dead mid-action
+                self._mark_originate_failure(f"AMI send_action exception: {e}")
+                # Close dead manager so next originate triggers reconnect
+                await self.disconnect()
+                raise
+
+            ok, msg = self._check_success(resp)
+            if ok:
+                break
+
+            self.logger.warning(
+                f"Originate attempt {idx}/{len(outbound_channels)} failed on "
+                f"{outbound_channel}: {msg or str(resp)[:200]}"
+            )
+
         if not ok:
             try:
                 if isinstance(resp, list) and resp:
@@ -399,7 +472,7 @@ class IVRClient:
         return {
             "call_id": call_id,
             "provider": provider.name,
-            "recording_path": str(rec_file),
+            "recording_path": IVRClient._find_recording_anywhere(str(rec_file)),
             "duration": duration,
             "dialstatus": self._dialstatus,
             "hangup_cause": self._hangup_cause,
