@@ -394,7 +394,7 @@ class IVRClient:
             base_action: Dict[str, Any] = {
                 "Action": "Originate",
                 "Channel": outbound_channel,
-                "Async": "true",
+                "Async": "false",
                 "Variable": variables,
             }
             if outbound_channel.startswith("Local/"):
