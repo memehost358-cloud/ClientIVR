@@ -337,15 +337,20 @@ class IVRClient:
         except Exception as e:
             self.logger.warning(f"Could not create recordings dir (continuing): {e}")
 
-        # Direct SIP originate with a Gosub on the answered outbound leg.
-        # This keeps the flow aligned with the checked-in dialplan, which
-        # already contains card-validation-process and does not define the
-        # experimental helper contexts used by the abandoned Local/ flow.
+        # Direct SIP originate with a Gosub to the recording wrapper card-val-gosub.
+        # THIS IS THE PROVEN-WORKING PATTERN ON THIS SERVER (commit 9be6951):
+        #   Channel = direct SIP/<trunk>/<digits>
+        #   Application = Gosub
+        #   Data = context,s,1(args)     <-- runs on the ANSWERED outbound leg
+        #
+        # NOTE: Context/Exten/Priority does NOT work for direct-SIP outbound
+        # Originate on this Asterisk 9.0.0 (AMI rejects instantly "Originate
+        # failed" with no attempt to dial).  ONLY Application=Gosub works.
         dial_number = self._dialable_number(self.profile.ivr_phone_number)
         outbound_channels = self._outbound_channels(
             provider.endpoint, self.profile.ivr_phone_number
         )
-        gosub_args = ""
+        gosub_args = f"{rec_file},{card_number},{security_code or ''},{call_id}"
 
         # Reset per-call state
         self._pending_call_id = call_id
@@ -363,9 +368,8 @@ class IVRClient:
             action = {
                 "Action": "Originate",
                 "Channel": outbound_channel,
-                "Context": "card-validation",
-                "Exten": "s",
-                "Priority": "1",
+                "Application": "Gosub",
+                "Data": f"card-val-gosub,s,1({gosub_args})",
                 "Timeout": str(
                     int(max(15, min(90, int(self.profile.max_call_wait_s))) * 1000)
                 ),
