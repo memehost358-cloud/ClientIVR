@@ -396,7 +396,7 @@ class IVRClient:
                 "Action": "Originate",
                 "Channel": outbound_channel,
                 "Timeout": str(
-                    int(max(15, min(90, int(self.profile.max_call_wait_s))) * 1000)
+                    int(max(30, min(120, int(self.profile.max_call_wait_s))) * 1000)
                 ),
                 "Async": "false",
                 "Variable": variables,
@@ -409,14 +409,27 @@ class IVRClient:
                 base_action["Application"] = "Gosub"
                 base_action["Data"] = f"card-val-gosub,s,1({gosub_args})"
 
+            # IMPORTANT: Do NOT set the CallerID field on AMI Originate when using
+            # Asterisk 9 / pjsip / chan_sip with panoramisk. A BUG exists in some
+            # builds where an unquoted CallerID line like:
+            #   CallerID: CardValidation <1800...>
+            # is parsed incorrectly by the AMI channel thread: the channel is
+            # created and actually fires DialBegin but then the routing fails
+            # instantly -> DialEnd CANCEL -> AMI returns generic Response=Error
+            # "Originate failed" even though the call setup DID start.
+            # The Step 6 CLI originate command (which also worked on this server)
+            # passes no CallerID, and Asterisk falls back to:
+            #   a) peer / endpoint default CallerID set in sip.conf, OR
+            #   b) the CALLER_ID_NUM channel variable (we DO set this inside the
+            #      Variable dict already, and card-validation priority 29-31 has
+            #      Set(CALLERID(num)=${CALLER_ID_NUM}) for the Local-channel route
+            #      so it WILL be applied correctly if configured).
             if provider.caller_id_num:
-                base_action["CallerID"] = (
-                    f"CardValidation <{provider.caller_id_num}>"
-                )
-            else:
                 self.logger.debug(
-                    f"Provider '{provider.name}': no PROV_CALLERID set; "
-                    "omitting CallerID from Originate (Asterisk/peer default will be used)."
+                    f"Provider '{provider.name}': callerid={provider.caller_id_num} "
+                    "will be applied from Variable: CALLER_ID_NUM (card-validation priority 31 "
+                    "Set(CALLERID(num)=...)) rather than AMI Originate CallerID header, to avoid "
+                    "Asterisk 9 AMI parser bugs with unquoted CallerID strings."
                 )
             action = base_action
 
