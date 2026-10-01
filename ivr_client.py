@@ -225,9 +225,13 @@ class IVRClient:
     def _dialable_number(number: str) -> str:
         # chan_sip peers often expect the request user part as digits only even
         # when the logical destination is stored in E.164 form with a leading +.
+        # HOWEVER, SignalWire and many modern providers REQUIRE the + for E.164.
         if not number:
             return ""
-        return "".join(ch for ch in str(number) if ch.isdigit())
+        s = str(number).strip()
+        prefix = "+" if s.startswith("+") else ""
+        digits = "".join(ch for ch in s if ch.isdigit())
+        return prefix + digits
 
     def _outbound_channels(self, endpoint: str, number: str) -> List[str]:
         dial_number = self._dialable_number(number)
