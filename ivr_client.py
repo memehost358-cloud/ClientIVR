@@ -15,7 +15,8 @@ PANORAMISK NOTES (real behaviour):
     OriginateResponse (not the generic "Response: Success"). We handle
     both response formats defensively.
   * "Variable" accepts a dict[str,str] OR a list of "k=v" strings (NOT
-    a single comma-separated string). We pass a dict.
+    a single comma-separated string). We pass a list of "K=v" strings
+    so panoramisk emits one "Variable: K=v" AMI header per item.
   * The Originate action has a "Channel" (the outgoing leg), plus the
     optional Context/Exten/Priority/Application for the B-leg. This
     client uses a direct SIP originate and runs Gosub on the answered
@@ -332,22 +333,28 @@ class IVRClient:
         has_security = bool(security_code)
 
         # Channel variables -> forwarded to dialplan asterisk/extensions.conf.
-        # panoramisk accepts a dict (not a comma-joined string).
-        variables: Dict[str, str] = {
-            "CALL_ID": call_id,
-            "IVR_NUMBER": self.profile.ivr_phone_number,
-            "CARD_NUMBER": card_number,
-            "SECURITY_CODE": security_code or "",
-            "RECORD_FILE": rec_file,
-            "OUTBOUND_TRUNK": provider.endpoint,
-            "CALLER_ID_NUM": provider.caller_id_num,
-            "DIAL_NUMBER": self._dialable_number(self.profile.ivr_phone_number),
-            "WAIT_CONNECT_S": str(float(self.profile.wait_after_connect_s)),
-            "WAIT_AFTER_CARD_S": str(float(self.profile.wait_after_card_digits_s)),
-            "WAIT_AFTER_CVV_S": str(float(self.profile.wait_after_cvv_digits_s)),
-            "DTMF_ON_MS": str(int(self.profile.dtmf_digit_on_ms)),
-            "DTMF_OFF_MS": str(int(self.profile.dtmf_inter_digit_ms)),
-        }
+        # panoramisk's Action.__str__ handles list/tuple values by emitting
+        # a SEPARATE "Variable: KEY=value" line for each item. A plain dict
+        # value, however, is serialized with Python's str() and produces a
+        # single line like "Variable: {'CALL_ID': 'abc'}" which Asterisk's AMI
+        # parser does NOT understand -> every channel variable ends up empty
+        # and Dial() dials an empty destination (404 NO_ROUTE_DESTINATION).
+        # So we MUST pass a list of "KEY=value" strings here.
+        variables: List[str] = [
+            f"CALL_ID={call_id}",
+            f"IVR_NUMBER={self.profile.ivr_phone_number}",
+            f"CARD_NUMBER={card_number}",
+            f"SECURITY_CODE={security_code or ''}",
+            f"RECORD_FILE={rec_file}",
+            f"OUTBOUND_TRUNK={provider.endpoint}",
+            f"CALLER_ID_NUM={provider.caller_id_num}",
+            f"DIAL_NUMBER={self._dialable_number(self.profile.ivr_phone_number)}",
+            f"WAIT_CONNECT_S={float(self.profile.wait_after_connect_s)}",
+            f"WAIT_AFTER_CARD_S={float(self.profile.wait_after_card_digits_s)}",
+            f"WAIT_AFTER_CVV_S={float(self.profile.wait_after_cvv_digits_s)}",
+            f"DTMF_ON_MS={int(self.profile.dtmf_digit_on_ms)}",
+            f"DTMF_OFF_MS={int(self.profile.dtmf_inter_digit_ms)}",
+        ]
 
         # Ensure the recordings dir exists BEFORE originate (so MixMonitor
         # can create the file there). Owner: asterisk:asterisk.
