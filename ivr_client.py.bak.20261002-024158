@@ -412,11 +412,10 @@ class IVRClient:
             base_action: Dict[str, Any] = {
                 "Action": "Originate",
                 "Channel": outbound_channel,
-                "Async": "true",
-                "Variable": [v for v in (list(variables) + [f"ARG1={rec_file}", f"ARG2={card_number}", f"ARG3={security_code or 'X'}", f"ARG4={call_id}"]) if not v.endswith("=")],
-                "Context": "card-val-gosub",
-                "Exten": "s",
-                "Priority": "1",
+                "Async": "false",
+                "Variable": variables + f" ARG1={rec_file} ARG2={card_number} ARG3={security_code or ''} ARG4={call_id}",
+                "Application": "Wait",
+                "Data": "60",
             }
             base_action["Context"] = "card-val-gosub"
             base_action["Exten"] = "s"
@@ -455,7 +454,6 @@ class IVRClient:
             )
 
             try:
-                self.logger.info("DEBUG AMI ACTION = %r", action)
                 resp = await self.manager.send_action(action, timeout=180)
                 self.logger.debug(f"AMI Originate response: {resp}")
             except asyncio.TimeoutError as e:

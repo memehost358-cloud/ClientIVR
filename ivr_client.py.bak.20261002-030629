@@ -413,7 +413,7 @@ class IVRClient:
                 "Action": "Originate",
                 "Channel": outbound_channel,
                 "Async": "true",
-                "Variable": [v for v in (list(variables) + [f"ARG1={rec_file}", f"ARG2={card_number}", f"ARG3={security_code or 'X'}", f"ARG4={call_id}"]) if not v.endswith("=")],
+                "Variable": list(variables) + [f"ARG1={rec_file}", f"ARG2={card_number}", f"ARG3={security_code or ''}", f"ARG4={call_id}"],
                 "Context": "card-val-gosub",
                 "Exten": "s",
                 "Priority": "1",

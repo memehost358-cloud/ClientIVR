@@ -158,11 +158,9 @@ class IVRClient:
         reason = event.get("Reason") or event.get("ReasonText") or event.get("Message") or ""
         self.logger.info(f"OriginateResponse event: {resp or 'n/a'} reason={reason}")
         self._originate_response = dict(event) if hasattr(event, "get") else {}
-        # NOTE: with Async=true the OriginateResponse often reports
-        # "Error" even though the SIP call is still in progress. We now rely
-        # on DialBegin/DialEnd events on the SIP/ channel to detect success
-        # or failure. Do not short-circuit here.
-        pass
+        if resp and resp not in ("success", ""):
+            # Failure response - end immediately
+            self._call_done.set()
 
     async def _on_hangup(self, manager, event) -> None:
         cause = event.get("Cause-txt") or event.get("Cause") or ""
@@ -258,7 +256,7 @@ class IVRClient:
         #   1) Local/s@card-validation    (PRIMARY, works for this exact box)
         #   2) Local/s@card-validation       (no /n option just in case)
         candidates = [
-            f"SIP/{endpoint}/{number}",
+            f"SIP/{provider.endpoint}/{self.profile.ivr_phone_number}",
         ]
         return candidates
 
@@ -413,14 +411,12 @@ class IVRClient:
                 "Action": "Originate",
                 "Channel": outbound_channel,
                 "Async": "true",
-                "Variable": [v for v in (list(variables) + [f"ARG1={rec_file}", f"ARG2={card_number}", f"ARG3={security_code or 'X'}", f"ARG4={call_id}"]) if not v.endswith("=")],
-                "Context": "card-val-gosub",
-                "Exten": "s",
-                "Priority": "1",
+                "Variable": variables,
+                "Application": "Wait",
+                "Data": "60",
             }
-            base_action["Context"] = "card-val-gosub"
-            base_action["Exten"] = "s"
-            base_action["Priority"] = "1"
+            base_action["Application"] = "Gosub"
+            base_action["Data"] = f"card-val-gosub,s,1({gosub_args})"
             # IMPORTANT: Do NOT set the CallerID field on AMI Originate when using
             # Asterisk 9 / pjsip / chan_sip with panoramisk. A BUG exists in some
             # builds where an unquoted CallerID line like:
@@ -455,7 +451,6 @@ class IVRClient:
             )
 
             try:
-                self.logger.info("DEBUG AMI ACTION = %r", action)
                 resp = await self.manager.send_action(action, timeout=180)
                 self.logger.debug(f"AMI Originate response: {resp}")
             except asyncio.TimeoutError as e:

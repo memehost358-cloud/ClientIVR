@@ -113,7 +113,6 @@ exten => s,1,NoOp(card-val-gosub ENTRY via AMI Gosub ANSWERED-LEG ARG1=${ARG1} A
  same => n,System(chmod 644 ${REC_PATH} 2>/dev/null || true)
  same => n,Return()
 
-
 [e164-normalize]
 ; ARG1 = raw number. Output: NUMBER_NORMALIZED
 exten => s,1,Set(_DIG=${FILTER(0123456789,${ARG1})})

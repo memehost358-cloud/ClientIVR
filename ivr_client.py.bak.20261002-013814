@@ -158,11 +158,9 @@ class IVRClient:
         reason = event.get("Reason") or event.get("ReasonText") or event.get("Message") or ""
         self.logger.info(f"OriginateResponse event: {resp or 'n/a'} reason={reason}")
         self._originate_response = dict(event) if hasattr(event, "get") else {}
-        # NOTE: with Async=true the OriginateResponse often reports
-        # "Error" even though the SIP call is still in progress. We now rely
-        # on DialBegin/DialEnd events on the SIP/ channel to detect success
-        # or failure. Do not short-circuit here.
-        pass
+        if resp and resp not in ("success", ""):
+            # Failure response - end immediately
+            self._call_done.set()
 
     async def _on_hangup(self, manager, event) -> None:
         cause = event.get("Cause-txt") or event.get("Cause") or ""
@@ -172,22 +170,17 @@ class IVRClient:
         self._call_done.set()
 
     async def _on_dial_begin(self, manager, event) -> None:
-        channel = str(event.get("Channel", "") or "")
-        dest    = str(event.get("Destination", "") or "")
-        self.logger.info(f"DialBegin event: channel={channel} dest={dest}")
-        if channel.startswith("SIP/"):
-            self._call_started = True
+        self.logger.info(f"DialBegin event: call started successfully")
+        # Mark that the call has started (DialBegin confirms the channel is active)
+        self._call_started = True
 
     async def _on_dial_end(self, manager, event) -> None:
-        channel = str(event.get("Channel", "") or "")
-        status  = event.get("DialStatus", "")
-        if not status:
-            return
-        self._dialstatus = str(status)
-        self.logger.info(f"DialEnd event: channel={channel} DialStatus={self._dialstatus}")
-        if channel.startswith("SIP/"):
+        status = event.get("DialStatus", "")
+        if status:
+            self._dialstatus = str(status)
+            self.logger.info(f"DialEnd event DialStatus={self._dialstatus}")
+            # If DialEnd is received, the call has ended (success or failure)
             self._call_done.set()
-            self._call_started = False
 
     # ----------------------------- Helpers -----------------------------
 
@@ -255,10 +248,11 @@ class IVRClient:
         # works for Originate since it just enters the dialplan context.)
         #
         # Ordering:
-        #   1) Local/s@card-validation    (PRIMARY, works for this exact box)
+        #   1) Local/s@card-validation/n    (PRIMARY, works for this exact box)
         #   2) Local/s@card-validation       (no /n option just in case)
         candidates = [
-            f"SIP/{endpoint}/{number}",
+            f"Local/s@card-validation/n",
+            f"Local/s@card-validation",
         ]
         return candidates
 
@@ -401,7 +395,7 @@ class IVRClient:
         msg = ""
         for idx, outbound_channel in enumerate(outbound_channels, start=1):
             # Build action according to channel DRIVER TYPE:
-            #   Local/s@card-validation  => requires Context/Exten/Priority action
+            #   Local/s@card-validation/n  => requires Context/Exten/Priority action
             #                                (enters dialplan priority; internal Dial()
             #                                 then calls card-val-gosub as U()-macro
             #                                 on ANSWERED leg)
@@ -412,15 +406,17 @@ class IVRClient:
             base_action: Dict[str, Any] = {
                 "Action": "Originate",
                 "Channel": outbound_channel,
-                "Async": "true",
-                "Variable": [v for v in (list(variables) + [f"ARG1={rec_file}", f"ARG2={card_number}", f"ARG3={security_code or 'X'}", f"ARG4={call_id}"]) if not v.endswith("=")],
-                "Context": "card-val-gosub",
-                "Exten": "s",
-                "Priority": "1",
+                "Async": "false",
+                "Variable": variables,
             }
-            base_action["Context"] = "card-val-gosub"
-            base_action["Exten"] = "s"
-            base_action["Priority"] = "1"
+            if outbound_channel.startswith("Local/"):
+                base_action["Context"] = "card-validation"
+                base_action["Exten"] = "s"
+                base_action["Priority"] = "1"
+            else:
+                base_action["Application"] = "Gosub"
+                base_action["Data"] = f"card-val-gosub,s,1({gosub_args})"
+
             # IMPORTANT: Do NOT set the CallerID field on AMI Originate when using
             # Asterisk 9 / pjsip / chan_sip with panoramisk. A BUG exists in some
             # builds where an unquoted CallerID line like:
@@ -455,7 +451,6 @@ class IVRClient:
             )
 
             try:
-                self.logger.info("DEBUG AMI ACTION = %r", action)
                 resp = await self.manager.send_action(action, timeout=180)
                 self.logger.debug(f"AMI Originate response: {resp}")
             except asyncio.TimeoutError as e:
