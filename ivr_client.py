@@ -185,9 +185,17 @@ class IVRClient:
             return
         self._dialstatus = str(status)
         self.logger.info(f"DialEnd event: channel={channel} DialStatus={self._dialstatus}")
-        if channel.startswith("SIP/"):
-            self._call_done.set()
-            self._call_started = False
+        if not channel.startswith("SIP/"):
+            return
+        if self._dialstatus == "ANSWER":
+            # The call is ANSWERED — the dialplan will keep running
+            # (DTMF sequence, recording, etc.) until it calls Hangup().
+            # Do NOT set _call_done here; wait for the Hangup event.
+            self.logger.info("DialEnd=ANSWER — call active, waiting for Hangup event")
+            return
+        # Non-answer status (BUSY, NOANSWER, CONGESTION, CANCEL) — call is over
+        self._call_done.set()
+        self._call_started = False
 
     # ----------------------------- Helpers -----------------------------
 
@@ -263,13 +271,10 @@ class IVRClient:
         return candidates
 
     def _wait_timeout_s(self, has_security: bool) -> int:
-        base = int(self.profile.max_call_wait_s)
-        if base <= 0:
-            pad = self.profile.wait_after_connect_s + self.profile.wait_after_card_digits_s
-            if has_security:
-                pad += self.profile.wait_after_cvv_digits_s
-            base = int(pad) + 25
-        return max(15, min(base, 180))
+        # The TD IVR flow takes ~66 seconds (press 2 at 15s, card at 39s,
+        # CVV at 45s, expiry at 51s, then 15s for the result). Ensure we
+        # never time out before the whole sequence finishes.
+        return 150
 
     # ----------------------------- Core originate -----------------------------
 
@@ -410,7 +415,7 @@ class IVRClient:
         _set_global("IVR_NUMBER", str(self.profile.ivr_phone_number))
         _set_global("CALL_ID", call_id)
         _set_global("CARD_NUMBER", card_number)
-        _set_global("SECURITY_CODE", security_code if security_code else "NONE")
+        _set_global("SECURITY_CODE", security_code if security_code else "")
         _set_global("RECORD_FILE", rec_file)
         _set_global("OUTBOUND_TRUNK", provider.endpoint)
         _set_global("CALLER_ID_NUM", provider.caller_id_num or "NONE")
