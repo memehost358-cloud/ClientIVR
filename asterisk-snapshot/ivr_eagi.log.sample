@@ -1,0 +1,5 @@
+2026-10-03 17:58:15,398 [INFO] ========================================================================
+2026-10-03 17:58:15,398 [INFO] EAGI start channel_env[agi_extension]=s agi_channel=SIP/signalwire-00000001
+2026-10-03 17:58:15,398 [INFO]   card_last4=4938 cvv_len=0 rec=/var/spool/asterisk/monitor/ivr-reactive-1791050282-9ebd92.wav
+2026-10-03 17:58:15,398 [INFO]   dtmf_on_ms=250 dtmf_off_ms=150 pad_s=40
+2026-10-03 17:58:15,398 [INFO]   backends_available=deepgram+elevenlabs starting on: deepgram
