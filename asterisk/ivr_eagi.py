@@ -258,6 +258,20 @@ class AGI:
         """AGI convention: arg_1..arg_N are the comma-separated script args."""
         return self.env.get(f"arg_{n}", default)
 
+    def get_variable(self, name: str) -> str:
+        """Retrieve a channel variable via GET VARIABLE AGI command.
+        Returns empty string if the variable does not exist or failed.
+        """
+        code, res, data = self.cmd(f"GET VARIABLE {name}")
+        if code == 200 and res in ("1",):
+            # AGI GET VARIABLE return format: 200 result=1 (value)
+            # data is the (value) part — strip surrounding parens if present
+            out = data
+            if out.startswith("(") and out.endswith(")"):
+                out = out[1:-1]
+            return out
+        return ""
+
     def cmd(self, text: str) -> Tuple[int, str, str]:
         """Send one AGI command. Return (code, result, data)."""
         sys.stdout.write(text + "\n")
@@ -458,9 +472,21 @@ def state_decide(rs: ReactiveState, text: str) -> Optional[str]:
 # Main EAGI entry
 # ---------------------------------------------------------------------------
 
-def build_backends() -> Tuple[List[TranscriptionBackend], str]:
-    dg_key = os.environ.get("DEEPGRAM_API_KEY", "").strip()
-    el_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+def build_backends(agi: Optional[AGI] = None) -> Tuple[List[TranscriptionBackend], str]:
+    def _key(name: str) -> str:
+        # 1) process env, 2) AGI channel vars (injected from ivr_reactive.py)
+        v = os.environ.get(name, "").strip()
+        if v:
+            return v
+        if agi is not None:
+            try:
+                return (agi.get_variable(name) or "").strip()
+            except Exception:
+                return ""
+        return ""
+
+    dg_key = _key("DEEPGRAM_API_KEY")
+    el_key = _key("ELEVENLABS_API_KEY")
     backends: List[TranscriptionBackend] = []
     order: List[str] = []
     if dg_key:
@@ -500,7 +526,7 @@ def main() -> int:
     log.info(f"  dtmf_on_ms={dtmf_on} dtmf_off_ms={dtmf_off} pad_s={pad_s}")
 
     # 2. Backends
-    backends, backend_order = build_backends()
+    backends, backend_order = build_backends(agi=agi)
     active_backend_idx = 0
     streak = 0
     rs = ReactiveState(
