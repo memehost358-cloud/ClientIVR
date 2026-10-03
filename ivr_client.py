@@ -59,7 +59,6 @@ class IVRClient:
         self.manager: Optional[Manager] = None
         self._pending_call_id: Optional[str] = None
         self._call_done: asyncio.Event = asyncio.Event()
-        self._call_started: bool = False
         self._hangup_cause: Optional[str] = None
         self._dialstatus: Optional[str] = None
         self._originate_response: Optional[Dict[str, Any]] = None
@@ -176,8 +175,6 @@ class IVRClient:
         channel = str(event.get("Channel", "") or "")
         dest    = str(event.get("Destination", "") or "")
         self.logger.info(f"DialBegin event: channel={channel} dest={dest}")
-        if channel.startswith("SIP/"):
-            self._call_started = True
 
     async def _on_dial_end(self, manager, event) -> None:
         channel = str(event.get("Channel", "") or "")
@@ -196,7 +193,6 @@ class IVRClient:
             return
         # Non-answer status (BUSY, NOANSWER, CONGESTION, CANCEL) — call is over
         self._call_done.set()
-        self._call_started = False
 
     # ----------------------------- Helpers -----------------------------
 
@@ -397,7 +393,6 @@ class IVRClient:
         # Reset per-call state
         self._pending_call_id = call_id
         self._call_done.clear()
-        self._call_started = False
         self._hangup_cause = None
         self._dialstatus = None
         self._originate_response = None
