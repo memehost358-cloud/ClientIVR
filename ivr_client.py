@@ -330,6 +330,63 @@ class IVRClient:
         # Unknown non-empty status - pessimistic
         return False, message or f"unknown_response_status={status}"
 
+    @staticmethod
+    def _cleanup_stale_channels(logger: logging.Logger) -> None:
+        """Hang up leftover Local/s@run-call-* and SIP/* outbound channels from
+        prior runs that were left dangling (e.g. due to timeouts or crashes).
+
+        Uses `channel request hangup all` with a pattern-safe fallback:
+        list channels with `core show channels concise` and hang up only those
+        that belong to this app (Local/s@run-call, SIP/$trunk with the
+        validation U()-sub). Safe even if no stale channels exist.
+        """
+        try:
+            list_r = subprocess.run(
+                ["sudo", "asterisk", "-rx", "core show channels concise"],
+                check=False, capture_output=True, text=True, timeout=15,
+            )
+            lines = [ln.strip() for ln in (list_r.stdout or "").splitlines() if ln.strip()]
+            candidates: List[str] = []
+            for ln in lines:
+                parts = ln.split("!")
+                if not parts:
+                    continue
+                channel = parts[0]
+                if channel.startswith("Local/s@run-call-"):
+                    candidates.append(channel)
+                elif channel.startswith("SIP/") and "card-val-gosub" in ln:
+                    candidates.append(channel)
+                elif channel.startswith("SIP/") and "card-validation" in ln:
+                    candidates.append(channel)
+            if not candidates:
+                logger.info("No stale channels found — starting clean.")
+                return
+            logger.warning(
+                f"Found {len(candidates)} stale channel(s); requesting hangup: "
+                f"{candidates[:5]}{'...' if len(candidates) > 5 else ''}"
+            )
+            for ch in candidates:
+                subprocess.run(
+                    ["sudo", "asterisk", "-rx",
+                     f"channel request hangup {ch}"],
+                    check=False, capture_output=True, text=True, timeout=10,
+                )
+                time.sleep(0.2)
+        except Exception as e:
+            logger.warning(f"Stale channel cleanup skipped (non-fatal): {e}")
+
+    @staticmethod
+    def _sanitize_security_code(value: Any) -> str:
+        """Return only digits. Treat empty/None/NONE strings as empty."""
+        if value is None:
+            return ""
+        s = str(value).strip()
+        if not s:
+            return ""
+        if s.lower() == "none":
+            return ""
+        return "".join(ch for ch in s if ch.isdigit())
+
     async def _originate_and_wait(
         self,
         call_id: str,
@@ -337,26 +394,22 @@ class IVRClient:
         security_code: str = "",
     ) -> Dict[str, Any]:
         if self.manager is None:
-            # Reconnect on first use or if explicit disconnect happened.
             await self.connect()
+
+        self._cleanup_stale_channels(self.logger)
 
         provider = self.current_provider
         rec_file = self._recording_file(call_id)
-        has_security = bool(security_code)
+        sec_clean = self._sanitize_security_code(security_code)
+        has_security = bool(sec_clean)
 
-        # Channel variables -> forwarded to dialplan asterisk/extensions.conf.
-        # panoramisk's Action.__str__ handles list/tuple values by emitting
-        # a SEPARATE "Variable: KEY=value" line for each item. A plain dict
-        # value, however, is serialized with Python's str() and produces a
-        # single line like "Variable: {'CALL_ID': 'abc'}" which Asterisk's AMI
-        # parser does NOT understand -> every channel variable ends up empty
-        # and Dial() dials an empty destination (404 NO_ROUTE_DESTINATION).
-        # So we MUST pass a list of "KEY=value" strings here.
+        card_clean = "".join(ch for ch in str(card_number or "") if ch.isdigit())
+
         variables: List[str] = [
             f"CALL_ID={call_id}",
             f"IVR_NUMBER={self.profile.ivr_phone_number}",
-            f"CARD_NUMBER={card_number}",
-            f"SECURITY_CODE={security_code or ''}",
+            f"CARD_NUMBER={card_clean}",
+            f"SECURITY_CODE={sec_clean}",
             f"RECORD_FILE={rec_file}",
             f"OUTBOUND_TRUNK={provider.endpoint}",
             f"CALLER_ID_NUM={provider.caller_id_num}",
@@ -388,9 +441,8 @@ class IVRClient:
         outbound_channels = self._outbound_channels(
             provider.endpoint, self.profile.ivr_phone_number
         )
-        gosub_args = f"{rec_file},{card_number},{security_code or ''},{call_id}"
+        gosub_args = f"{rec_file},{card_clean},{sec_clean},{call_id}"
 
-        # Reset per-call state
         self._pending_call_id = call_id
         self._call_done.clear()
         self._hangup_cause = None
@@ -407,8 +459,8 @@ class IVRClient:
 
         _set_global("IVR_NUMBER", str(self.profile.ivr_phone_number))
         _set_global("CALL_ID", call_id)
-        _set_global("CARD_NUMBER", card_number)
-        _set_global("SECURITY_CODE", security_code if security_code else "")
+        _set_global("CARD_NUMBER", card_clean)
+        _set_global("SECURITY_CODE", sec_clean)
         _set_global("RECORD_FILE", rec_file)
         _set_global("OUTBOUND_TRUNK", provider.endpoint)
         _set_global("CALLER_ID_NUM", provider.caller_id_num or "")
@@ -424,7 +476,7 @@ class IVRClient:
             check=False, capture_output=True, text=True,
         )
 
-        wait_max = self._wait_timeout_s(bool(security_code))
+        wait_max = self._wait_timeout_s(bool(sec_clean))
         try:
             await asyncio.wait_for(self._call_done.wait(), timeout=wait_max)
         except asyncio.TimeoutError:

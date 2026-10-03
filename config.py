@@ -108,8 +108,8 @@ class IVRProfile:
             wait_after_connect_s=float(os.getenv("WAIT_AFTER_CONNECT_S", "2")),
             wait_after_card_digits_s=float(os.getenv("WAIT_AFTER_CARD_DIGITS_S", "6")),
             wait_after_cvv_digits_s=float(os.getenv("WAIT_AFTER_CVV_DIGITS_S", "5")),
-            dtmf_digit_on_ms=int(os.getenv("DTMF_DIGIT_ON_MS", "100")),
-            dtmf_inter_digit_ms=int(os.getenv("DTMF_INTER_DIGIT_MS", "200")),
+            dtmf_digit_on_ms=int(os.getenv("DTMF_DIGIT_ON_MS", "250")),
+            dtmf_inter_digit_ms=int(os.getenv("DTMF_INTER_DIGIT_MS", "350")),
             max_call_wait_s=int(os.getenv("MAX_CALL_WAIT_S", "45")),
             phrases_card_prompt=_split_csv(os.getenv("PHRASES_CARD_PROMPT")) or [
                 "please enter your 16 digit card number",
