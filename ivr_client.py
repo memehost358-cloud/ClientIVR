@@ -32,10 +32,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from panoramisk import Manager
 
@@ -402,9 +403,6 @@ class IVRClient:
         self._originate_response = None
 
         start_ts = time.time()
-        resp: Any = None
-        msg = ""
-        import subprocess
 
         def _set_global(name: str, value: str) -> None:
             subprocess.run(
@@ -418,7 +416,7 @@ class IVRClient:
         _set_global("SECURITY_CODE", security_code if security_code else "")
         _set_global("RECORD_FILE", rec_file)
         _set_global("OUTBOUND_TRUNK", provider.endpoint)
-        _set_global("CALLER_ID_NUM", provider.caller_id_num or "NONE")
+        _set_global("CALLER_ID_NUM", provider.caller_id_num or "")
 
         self.logger.info(
             f"[provider={provider.name}] CLI originate call_id={call_id} "
@@ -435,46 +433,64 @@ class IVRClient:
         try:
             await asyncio.wait_for(self._call_done.wait(), timeout=wait_max)
         except asyncio.TimeoutError:
-            self.logger.warning(f"Call timeout after {wait_max}s")
-
-        self._call_started = True
-
-        if not self._call_started:
-            # All attempts failed
-            self._mark_originate_failure(
-                f"All originate attempts failed. Last DialStatus: {self._dialstatus or 'N/A'}"
-            )
-            raise Exception(
-                f"All originate attempts failed. Last DialStatus: {self._dialstatus or 'N/A'}"
-            )
-
-        # Wait for Hangup event (or safety timeout)
-        wait_max = self._wait_timeout_s(has_security)
-        try:
-            await asyncio.wait_for(self._call_done.wait(), timeout=wait_max)
-            self._mark_originate_success()
-        except asyncio.TimeoutError:
             self.logger.warning(
-                f"Call {call_id} did not Hangup within {wait_max}s; considering done"
+                f"AMI events did not fire _call_done within {wait_max}s; "
+                f"continuing to recording poll anyway."
             )
-            self._mark_originate_failure(f"timeout {wait_max}s without hangup")
+        if self._dialstatus and self._dialstatus not in ("ANSWER",):
+            self._mark_originate_failure(f"DialStatus={self._dialstatus}")
+        else:
+            self._mark_originate_success()
+
+        MAX_WAIT_S: float = 150.0
+        POLL_INTERVAL_S: float = 1.0
+        STABLE_WINDOW_S: float = 2.0
+        MIN_SIZE_BYTES: int = 100 * 1024
+
+        rec_path = Path(rec_file)
+        poll_start = time.time()
+        history: List[Tuple[float, int]] = []
+        last_logged_size = -1
+        stabilized = False
+
+        while (time.time() - poll_start) < MAX_WAIT_S:
+            if rec_path.exists():
+                sz = rec_path.stat().st_size
+                now = time.time()
+                history.append((now, sz))
+                while len(history) > 6:
+                    history.pop(0)
+
+                sizes = [s for (_, s) in history]
+                t_span = history[-1][0] - history[0][0]
+                if (len(sizes) >= 2
+                        and len(set(sizes)) == 1
+                        and t_span >= STABLE_WINDOW_S
+                        and sz > MIN_SIZE_BYTES):
+                    stabilized = True
+                    waited_total = round(now - poll_start, 1)
+                    self.logger.info(
+                        f"Recording STABILIZED: {rec_file} size={sz} bytes "
+                        f"(>100KB OK, stable for {round(t_span, 1)}s, "
+                        f"polled {waited_total}s)"
+                    )
+                    break
+
+                if sz != last_logged_size:
+                    self.logger.info(
+                        f"Recording growing: {rec_file} size={sz} bytes "
+                        f"(waited {round(time.time() - poll_start, 1)}s of {MAX_WAIT_S}s max)"
+                    )
+                    last_logged_size = sz
+
+            await asyncio.sleep(POLL_INTERVAL_S)
 
         duration = round(time.time() - start_ts, 2)
 
-        # Poll for the recording file (StopMixMonitor flush is slightly async)
-        rec_path = Path(rec_file)
-        waited = 0.0
-        found = False
-        while waited < 12.0:
-            if rec_path.exists() and rec_path.stat().st_size > 0:
-                found = True
-                break
-            await asyncio.sleep(0.5)
-            waited += 0.5
-
-        if not found:
-            # Final non-strict check (maybe empty file is created later)
-            if not rec_path.exists():
+        if not stabilized:
+            waited_total = round(time.time() - poll_start, 1)
+            final_sz = rec_path.stat().st_size if rec_path.exists() else 0
+            if final_sz <= 0 and not rec_path.exists():
                 self.logger.error(
                     f"Recording MISSING: {rec_file} (not found in {rec_path.parent}) "
                     f"-> check: (1) dir owner asterisk:asterisk? (2) MixMonitor enabled "
@@ -482,12 +498,14 @@ class IVRClient:
                 )
             else:
                 self.logger.warning(
-                    f"Recording exists but is still empty: {rec_file} ({rec_path.stat().st_size}b)"
+                    f"Recording did NOT stabilize within {MAX_WAIT_S}s: "
+                    f"{rec_file} size={final_sz} bytes (need >100KB & 2s stable). "
+                    f"Polled {waited_total}s; returning best effort (transcription may fail)."
                 )
         else:
             sz = rec_path.stat().st_size
             self.logger.info(
-                f"Recording ready: {rec_file} size={sz} bytes, duration~{duration}s"
+                f"Recording ready: {rec_file} size={sz} bytes, total duration~{duration}s"
             )
 
         return {
