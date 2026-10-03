@@ -31,6 +31,7 @@ from config import (
     CardSpec,
 )
 from ivr_client import IVRClient
+from ivr_reactive import ReactiveIVR
 from response_analyzer import ResponseAnalyzer, ResponseCategory
 from transcription import TranscriptionService
 
@@ -263,14 +264,14 @@ class CardValidator:
         self.analyzer = analyzer
         self.logger = logger
         # Shared IVRClient across all attempts (reconnects itself if dead).
-        self._ivr: Optional[IVRClient] = None
+        self._ivr: Optional[ReactiveIVR] = None
         # Shared TranscriptionService across all attempts (sync HTTP).
         self._ts: Optional[TranscriptionService] = None
 
     # ---- Dependency management ----
-    def _get_ivr(self) -> IVRClient:
+    def _get_ivr(self) -> ReactiveIVR:
         if self._ivr is None:
-            self._ivr = IVRClient(
+            self._ivr = ReactiveIVR(
                 self.config, self.profile, self.provider_policy, self.logger
             )
         return self._ivr

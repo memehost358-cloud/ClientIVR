@@ -160,7 +160,9 @@ class ReactiveIVR:
 
     @staticmethod
     def _recording_file(call_id: str) -> str:
-        return IVRClient._recording_file(call_id)
+        MON_DIR = "/var/spool/asterisk/monitor"
+        os.makedirs(MON_DIR, exist_ok=True)
+        return os.path.join(MON_DIR, f"ivr-{call_id}.wav")
 
     @staticmethod
     def _sanitize_security_code(value: Any) -> str:
@@ -198,7 +200,7 @@ class ReactiveIVR:
             f"OUTBOUND_TRUNK={provider.endpoint}",
             f"CALLER_ID_NUM={provider.caller_id_num}",
             f"DIAL_NUMBER={IVRClient._dialable_number(self.profile.ivr_phone_number)}",
-            f"REACTIVE_MODE=1",
+            f"__REACTIVE_MODE=1",
             f"WAIT_CONNECT_S={float(self.profile.wait_after_connect_s)}",
             f"WAIT_AFTER_CARD_S={float(self.profile.wait_after_card_digits_s)}",
             f"WAIT_AFTER_CVV_S={float(self.profile.wait_after_cvv_digits_s)}",
