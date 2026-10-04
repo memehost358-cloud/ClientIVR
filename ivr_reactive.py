@@ -39,6 +39,7 @@ from panoramisk import Manager
 
 from config import Config, IVRProfile, ProviderPolicy, ProviderSpec
 from ivr_client import IVRClient
+from reactive_engine import ReactiveEngine
 
 
 class ReactiveIVR:
@@ -233,18 +234,26 @@ class ReactiveIVR:
             check=False, capture_output=True, text=True,
         )
 
-        wait_max = 180
-        try:
-            await asyncio.wait_for(self._call_done.wait(), timeout=wait_max)
-        except asyncio.TimeoutError:
-            self.logger.warning(
-                f"ReactiveIVR AMI events did not complete within {wait_max}s; "
-                f"continuing to recording poll anyway."
-            )
-        if self._dialstatus and self._dialstatus not in ("ANSWER",):
-            self._mark_originate_failure(f"DialStatus={self._dialstatus}")
-        else:
-            self._mark_originate_success()
+        # Run the reactive engine loop that drives DTMF via AMI
+        engine = ReactiveEngine(
+            manager=self.manager,
+            rec_file=rec_file,
+            card_number=card_clean,
+            security_code=sec_clean,
+            logger=self.logger,
+            max_seconds=180,
+        )
+        engine_result = await engine.run()
+
+        # Log what the engine did
+        self.logger.info(
+            f"ReactiveEngine result: dtmf_sent={engine_result['dtmf_sent']} "
+            f"transcript_len={len(engine_result['transcript'])} "
+            f"terminal={engine_result['terminal']}"
+        )
+
+        # Mark originate as successful if we got here (engine ran)
+        self._mark_originate_success()
 
         # Stabilize recording (EXACT same algorithm as ivr_client, verbatim)
         MAX_WAIT_S: float = 150.0
