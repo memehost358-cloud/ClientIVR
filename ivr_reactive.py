@@ -233,6 +233,7 @@ class ReactiveIVR:
         _set_global("RECORD_FILE", rec_file)
         _set_global("OUTBOUND_TRUNK", provider.endpoint)
         _set_global("CALLER_ID_NUM", provider.caller_id_num or "")
+        _set_global("REACTIVE_MODE", "1")
 
         self._pending_call_id = call_id
         self._call_done.clear()
