@@ -191,30 +191,6 @@ class ReactiveIVR:
         dg_key = os.environ.get("DEEPGRAM_API_KEY", "").strip()
         el_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
 
-        variables: List[str] = [
-            f"CALL_ID={call_id}",
-            f"IVR_NUMBER={self.profile.ivr_phone_number}",
-            f"CARD_NUMBER={card_clean}",
-            f"SECURITY_CODE={sec_clean}",
-            f"RECORD_FILE={rec_file}",
-            f"OUTBOUND_TRUNK={provider.endpoint}",
-            f"CALLER_ID_NUM={provider.caller_id_num}",
-            f"DIAL_NUMBER={IVRClient._dialable_number(self.profile.ivr_phone_number)}",
-            f"__REACTIVE_MODE=1",
-            f"WAIT_CONNECT_S={float(self.profile.wait_after_connect_s)}",
-            f"WAIT_AFTER_CARD_S={float(self.profile.wait_after_card_digits_s)}",
-            f"WAIT_AFTER_CVV_S={float(self.profile.wait_after_cvv_digits_s)}",
-            f"DTMF_ON_MS={int(self.profile.dtmf_digit_on_ms)}",
-            f"DTMF_OFF_MS={int(self.profile.dtmf_inter_digit_ms)}",
-        ]
-        # Propagate transcription API keys as channel vars — AGI exposes these
-        # automatically as AGI arg_(N).  ivr_eagi.py reads BOTH process env
-        # AND falls back to AGI channel vars.
-        if dg_key:
-            variables.append(f"DEEPGRAM_API_KEY={dg_key}")
-        if el_key:
-            variables.append(f"ELEVENLABS_API_KEY={el_key}")
-
         try:
             Path(rec_file).parent.mkdir(parents=True, exist_ok=True)
         except Exception as e:
