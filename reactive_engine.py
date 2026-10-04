@@ -301,12 +301,30 @@ class ReactiveEngine:
     async def run(self) -> Dict[str, Any]:
         """Run the reactive loop until terminal state or timeout."""
         self.logger.info(f"ReactiveEngine starting: rec_file={self.rec_file} max={self.max_seconds}s")
+        self.chunks_sent = 0
+        self._last_heartbeat = 0.0
 
         # Start a background task to wait for the SIP channel via AMI Newchannel
         channel_task = asyncio.create_task(self._wait_for_sip_channel())
 
         try:
+            self.logger.info(f"ReactiveEngine: entering main loop, rec_path={self.rec_file}")
             while time.time() - self._start_time < self.max_seconds:
+                now = time.time()
+                if now - self._last_heartbeat >= 2.0:
+                    try:
+                        p = Path(self.rec_file)
+                        file_size = p.stat().st_size if p.exists() else 0
+                    except Exception:
+                        file_size = -1
+                    self.logger.info(
+                        f"ReactiveEngine: tick file_size={file_size} "
+                        f"buffered={len(self._buffer)} "
+                        f"chunks_sent={self.chunks_sent} "
+                        f"elapsed={int(now - self._start_time)}s"
+                    )
+                    self._last_heartbeat = now
+
                 # Check if terminal
                 if self.state.terminal:
                     self.logger.info("ReactiveEngine: terminal state reached")
@@ -320,6 +338,8 @@ class ReactiveEngine:
                     # Process complete chunks with overlap
                     while len(self._buffer) >= CHUNK_BYTES:
                         chunk = bytes(self._buffer[:CHUNK_BYTES])
+                        self.logger.info(f"ReactiveEngine: chunk emitted len={len(chunk)}")
+                        self.chunks_sent += 1
                         # Keep overlap for next chunk
                         del self._buffer[:CHUNK_BYTES - OVERLAP_BYTES]
 
@@ -413,7 +433,10 @@ class ReactiveEngine:
         except asyncio.TimeoutError:
             self.logger.error("ReactiveEngine: SIP channel not found within 30s — DTMF will not be sent")
         finally:
-            self.manager.unregister_event("Newchannel", on_newchannel)
+            try:
+                self.manager.unregister_event("Newchannel", on_newchannel)
+            except Exception as e:
+                self.logger.debug(f"unregister skipped: {e}")
 
     async def _send_dtmf(self, digits: str) -> None:
         """Send DTMF via AMI SendDTMF to the captured SIP channel."""
@@ -421,7 +444,11 @@ class ReactiveEngine:
             self.logger.warning(f"Cannot send DTMF {digits}: no SIP channel yet")
             return
         try:
-            self.logger.info(f"SEND DTMF to {self.sip_channel}: digits={digits}")
+            if digits.isdigit() and len(digits) > 4:
+                masked = "****" + digits[-4:]
+            else:
+                masked = digits
+            self.logger.info(f"ReactiveEngine: SEND DTMF to {self.sip_channel}: digits={masked}")
             await self.manager.send_action({
                 "Action": "SendDTMF",
                 "Channel": self.sip_channel,
