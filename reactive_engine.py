@@ -450,7 +450,7 @@ class ReactiveEngine:
                 self.logger.debug(f"unregister skipped: {e}")
 
     async def _send_dtmf(self, digits: str) -> None:
-        """Send DTMF via AMI SendDTMF to the captured SIP channel."""
+        """Send DTMF via dialplan SendDTMF() application using SetVar + Redirect."""
         if not self.sip_channel:
             self.logger.warning(f"Cannot send DTMF {digits}: no SIP channel yet")
             return
@@ -459,15 +459,27 @@ class ReactiveEngine:
                 masked = "****" + digits[-4:]
             else:
                 masked = digits
-            self.logger.info(f"ReactiveEngine: SEND DTMF to {self.sip_channel}: digits={masked}")
-            resp = await self.manager.send_action({
-                "Action": "SendDTMF",
+            self.logger.info(f"ReactiveEngine: SEND DTMF via dialplan to {self.sip_channel}: digits={masked}")
+
+            # Set channel variable with digits to send
+            await self.manager.send_action({
+                "Action": "SetVar",
                 "Channel": self.sip_channel,
-                "Digit": digits,
+                "Variable": "SEND_DTMF_DIGITS",
+                "Value": digits,
             })
-            self.logger.info(f"AMI SendDTMF response: {resp}")
+
+            # Redirect to dialplan context that executes SendDTMF() then returns
+            resp = await self.manager.send_action({
+                "Action": "Redirect",
+                "Channel": self.sip_channel,
+                "Context": "send-dtmf",
+                "Extension": "s",
+                "Priority": "1",
+            })
+            self.logger.info(f"Dialplan DTMF redirect response: {resp}")
         except Exception as e:
-            self.logger.warning(f"SendDTMF failed: {e}")
+            self.logger.warning(f"Dialplan SendDTMF failed: {e}")
 
     async def _hangup(self, channel: str) -> None:
         """Hang up the SIP channel via AMI Hangup."""
