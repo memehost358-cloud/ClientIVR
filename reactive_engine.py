@@ -283,7 +283,8 @@ class ReactiveEngine:
         max_seconds: int = MAX_CALL_SECONDS,
     ):
         self.manager = manager
-        self.rec_file = rec_file
+        self.rec_file: str = rec_file
+        self.rec_path: Path = Path(rec_file)
         self.card_number = card_number
         self.security_code = security_code
         self.logger = logger
@@ -291,7 +292,7 @@ class ReactiveEngine:
         self.state = ReactiveState()
         self.backends = build_backends(logger)
         self.sip_channel: Optional[str] = None
-        self._file_cursor = WAV_HEADER_BYTES  # skip 44-byte WAV header
+        self._file_cursor: int = WAV_HEADER_BYTES  # skip 44-byte WAV header
         self._buffer = bytearray()
         self._start_time = time.time()
 
@@ -308,13 +309,12 @@ class ReactiveEngine:
         channel_task = asyncio.create_task(self._wait_for_sip_channel())
 
         try:
-            self.logger.info(f"ReactiveEngine: entering main loop, rec_path={self.rec_file}")
+            self.logger.info(f"ReactiveEngine: entering main loop, rec_file={self.rec_file}")
             while time.time() - self._start_time < self.max_seconds:
                 now = time.time()
                 if now - self._last_heartbeat >= 2.0:
                     try:
-                        p = Path(self.rec_file)
-                        file_size = p.stat().st_size if p.exists() else 0
+                        file_size = self.rec_path.stat().st_size if self.rec_path.exists() else 0
                     except Exception:
                         file_size = -1
                     self.logger.info(
@@ -384,13 +384,22 @@ class ReactiveEngine:
     def _read_new_pcm(self) -> Optional[bytes]:
         """Read new PCM bytes from the MixMonitor file (skipping 44-byte header)."""
         try:
-            path = Path(self.rec_file)
-            if not path.exists():
+            if not self.rec_path.exists():
                 return None
-            size = path.stat().st_size
+            size = self.rec_path.stat().st_size
+            # If the underlying file shrank (MixMonitor truncated / recreated
+            # the WAV between reads) the in-memory cursor would stay forever
+            # ahead of size, producing None forever. Re-sync past the new header
+            # and let the next read grab fresh PCM from the new file.
+            if size < self._file_cursor:
+                self.logger.warning(
+                    f"ReactiveEngine: WAV shrank (size={size} < cursor={self._file_cursor}). "
+                    f"Re-syncing cursor past {WAV_HEADER_BYTES}-byte header."
+                )
+                self._file_cursor = WAV_HEADER_BYTES
             if size <= self._file_cursor:
                 return None
-            with path.open("rb") as f:
+            with self.rec_path.open("rb") as f:
                 f.seek(self._file_cursor)
                 data = f.read(size - self._file_cursor)
             self._file_cursor = size
