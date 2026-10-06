@@ -230,7 +230,7 @@ class ReactiveIVR:
         # this exact server.
         subprocess.run(
             ["sudo", "asterisk", "-rx",
-             "channel originate Local/s@run-call application Wait 60"],
+             "channel originate SIP/signalwire/+18774916062 extension s@card-validation"],
             check=False, capture_output=True, text=True,
         )
 
