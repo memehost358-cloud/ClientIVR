@@ -72,6 +72,7 @@ INVALID_SELECTION_TRIGGERS = [
     "invalid selection",
     "didn't get that",
     "try again",
+    "I'm sorry. I did not receive your response",
 ]
 
 ENGLISH_TRIGGERS = [
@@ -244,12 +245,13 @@ def state_decide(state: ReactiveState, new_text: str, card_number: str, security
         state.triggered.add("french_2")
         return None
 
-    # 4. Card number prompt — send the 16-digit card
+    # 4. Card number prompt — send the 16-digit card + "#"
     if "card_number" not in state.triggered and _match_trigger(state.transcript, CARD_NUMBER_TRIGGERS):
         state.triggered.add("card_number")
-        state.dtmf_sent.append(card_number)
-        state.last_dtmf_sent = card_number
-        return card_number
+        digits_to_send = card_number + "#"
+        state.dtmf_sent.append(digits_to_send)
+        state.last_dtmf_sent = digits_to_send
+        return digits_to_send
 
     # 5. Security code / CVV prompt — send the 3-digit CVV
     if "security_code" not in state.triggered and _match_trigger(state.transcript, SECURITY_CODE_TRIGGERS):
@@ -458,11 +460,12 @@ class ReactiveEngine:
             else:
                 masked = digits
             self.logger.info(f"ReactiveEngine: SEND DTMF to {self.sip_channel}: digits={masked}")
-            await self.manager.send_action({
+            resp = await self.manager.send_action({
                 "Action": "SendDTMF",
                 "Channel": self.sip_channel,
                 "Digit": digits,
             })
+            self.logger.info(f"AMI SendDTMF response: {resp}")
         except Exception as e:
             self.logger.warning(f"SendDTMF failed: {e}")
 
