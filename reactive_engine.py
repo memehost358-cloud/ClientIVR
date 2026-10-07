@@ -355,9 +355,11 @@ class ReactiveEngine:
                                 self.security_code,
                             )
 
-                # Send pending DTMF after silence
+                # Send pending DTMF after silence (only if channel is ready)
                 SILENCE_S = 3.0
-                if self.state.pending_dtmf and (time.monotonic() - self.state.last_change_ts) >= SILENCE_S:
+                if (self.state.pending_dtmf and 
+                    self.sip_channel and 
+                    (time.monotonic() - self.state.last_change_ts) >= SILENCE_S):
                     digits = self.state.pending_dtmf
                     self.state.pending_dtmf = None
                     self.state.dtmf_sent.append(digits)
