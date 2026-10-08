@@ -42,26 +42,22 @@ except ImportError:
 
 from panoramisk import Manager
 
-# ---- panoramisk workaround ----------------------------------------------
-# Asterisk returns some actions (e.g. PlayDTMF) with a multi-message response
-# whose final line is '... successfully queued' but WITHOUT an Async header.
-# panoramisk 0.x unconditionally does self['async'] on that line and
-# raises KeyError: 'async', which kills the AMI connection mid-call.
-# Patch MultiDict.__getitem__ to return None instead of raising.
-try:
-    import panoramisk.utils as _pm_utils
-    if not getattr(_pm_utils.MultiDict, '_safe_getitem_patched', False):
-        _orig_getitem = _pm_utils.MultiDict.__getitem__
-        def _safe_getitem(self, key):
-            try:
-                return _orig_getitem(self, key)
-            except KeyError:
-                return None
-        _pm_utils.MultiDict.__getitem__ = _safe_getitem
-        _pm_utils.MultiDict._safe_getitem_patched = True
-except Exception:  # pragma: no cover
-    pass
-# ------------------------------------------------------------------------
+# ---- panoramisk 1.4 bug workaround --------------------------------------
+# Asterisk returns PlayDTMF (and similar async actions) with a
+# '... successfully queued' line that has NO 'Async' header. panoramisk 1.4
+# does CaseInsensitiveDict.__getitem__('async') on that line and raises
+# KeyError, which kills the AMI connection mid-call. Patch the method so it
+# returns None instead of raising.
+import panoramisk.utils as _pm_utils
+_pm_orig_getitem = _pm_utils.CaseInsensitiveDict.__getitem__
+def _pm_safe_getitem(self, key):
+    try:
+        return _pm_orig_getitem(self, key)
+    except KeyError:
+        return None
+_pm_utils.CaseInsensitiveDict.__getitem__ = _pm_safe_getitem
+# -------------------------------------------------------------------------
+
 
 
 # ─── Constants ───
