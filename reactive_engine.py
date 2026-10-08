@@ -42,6 +42,27 @@ except ImportError:
 
 from panoramisk import Manager
 
+# ---- panoramisk workaround ----------------------------------------------
+# Asterisk returns some actions (e.g. PlayDTMF) with a multi-message response
+# whose final line is '... successfully queued' but WITHOUT an Async header.
+# panoramisk 0.x unconditionally does self['async'] on that line and
+# raises KeyError: 'async', which kills the AMI connection mid-call.
+# Patch MultiDict.__getitem__ to return None instead of raising.
+try:
+    import panoramisk.utils as _pm_utils
+    if not getattr(_pm_utils.MultiDict, '_safe_getitem_patched', False):
+        _orig_getitem = _pm_utils.MultiDict.__getitem__
+        def _safe_getitem(self, key):
+            try:
+                return _orig_getitem(self, key)
+            except KeyError:
+                return None
+        _pm_utils.MultiDict.__getitem__ = _safe_getitem
+        _pm_utils.MultiDict._safe_getitem_patched = True
+except Exception:  # pragma: no cover
+    pass
+# ------------------------------------------------------------------------
+
 
 # ─── Constants ───
 SAMPLE_RATE = 8000
