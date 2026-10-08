@@ -107,6 +107,8 @@ class ReactiveState:
     triggered: Set[str] = field(default_factory=set)
     terminal: bool = False
     call_sid: Optional[str] = None  # AMI channel uniqueid for logging
+    last_change_ts: float = 0.0
+    pending_dtmf: Optional[str] = None
 
 
 # ─── Transcription backend protocol ───
@@ -220,12 +222,16 @@ def state_decide(state: ReactiveState, new_text: str, card_number: str, security
     """
     Decide what DTMF to send based on the latest transcript snippet.
     Returns the digit string to send, or None if nothing to press.
+    
+    If a new trigger fires while pending_dtmf is set, returns 'FLUSH' to signal
+    immediate send of queued DTMF before processing the new trigger.
     """
     if state.terminal:
         return None
 
     # Append new text
     state.transcript += " " + new_text
+    state.last_change_ts = time.monotonic()
 
     # 1. Terminal triggers
     if _match_trigger(state.transcript, TERMINAL_TRIGGERS):
@@ -234,10 +240,11 @@ def state_decide(state: ReactiveState, new_text: str, card_number: str, security
 
     # 2. English prompt — press 1
     if "english_1" not in state.triggered and _match_trigger(state.transcript, ENGLISH_TRIGGERS):
+        if state.pending_dtmf:  # Flush any pending DTMF first
+            return "FLUSH"
         state.triggered.add("english_1")
-        state.dtmf_sent.append("1")
-        state.last_dtmf_sent = "1"
-        return "1"
+        state.pending_dtmf = "1"
+        return None
 
     # 3. French prompt — record and fall through (do NOT block the card check)
     if "french_2" not in state.triggered and _match_trigger(state.transcript, FRENCH_TRIGGERS):
@@ -245,25 +252,26 @@ def state_decide(state: ReactiveState, new_text: str, card_number: str, security
 
     # 4. Card number prompt — send the 16-digit card + "#"
     if "card_number" not in state.triggered and _match_trigger(state.transcript, CARD_NUMBER_TRIGGERS):
+        if state.pending_dtmf:  # Flush any pending DTMF first
+            return "FLUSH"
         state.triggered.add("card_number")
         digits_to_send = card_number + "#"
-        state.dtmf_sent.append(digits_to_send)
-        state.last_dtmf_sent = digits_to_send
-        return digits_to_send
+        state.pending_dtmf = digits_to_send
+        return None
 
     # 5. Security code / CVV prompt — send the 3-digit CVV
     if "security_code" not in state.triggered and _match_trigger(state.transcript, SECURITY_CODE_TRIGGERS):
+        if state.pending_dtmf:  # Flush any pending DTMF first
+            return "FLUSH"
         state.triggered.add("security_code")
-        state.dtmf_sent.append(security_code)
-        state.last_dtmf_sent = security_code
-        return security_code
+        state.pending_dtmf = security_code
+        return None
 
     # 6. Invalid selection / retry — resend last DTMF (or card if nothing sent yet)
     if _match_trigger(state.transcript, INVALID_SELECTION_TRIGGERS):
         to_resend = state.last_dtmf_sent or card_number
-        state.dtmf_sent.append(to_resend)
-        state.last_dtmf_sent = to_resend
-        return to_resend
+        state.pending_dtmf = to_resend
+        return None
 
     return None
 
@@ -347,15 +355,35 @@ class ReactiveEngine:
                         transcript = await self._transcribe_chunk(chunk)
                         if transcript:
                             self.logger.info(f"Transcript: {transcript}")
-                            dtmf = state_decide(
+                            result = state_decide(
                                 self.state,
                                 transcript,
                                 self.card_number,
                                 self.security_code,
                             )
-                            if dtmf:
-                                await self._send_dtmf(dtmf)
-                else:
+                            # If FLUSH returned, send pending DTMF immediately
+                            if result == "FLUSH" and self.state.pending_dtmf and self.sip_channel:
+                                digits = self.state.pending_dtmf
+                                self.state.pending_dtmf = None
+                                self.state.dtmf_sent.append(digits)
+                                self.state.last_dtmf_sent = digits
+                                self.logger.info(f"Flushing pending DTMF before new trigger: {digits}")
+                                await self._send_dtmf(digits)
+                                # Re-run state_decide to process the new trigger
+                                state_decide(self.state, "", self.card_number, self.security_code)
+
+                # Send pending DTMF after silence (only if channel is ready)
+                SILENCE_S = 3.0
+                if (self.state.pending_dtmf and 
+                    self.sip_channel and 
+                    (time.monotonic() - self.state.last_change_ts) >= SILENCE_S):
+                    digits = self.state.pending_dtmf
+                    self.state.pending_dtmf = None
+                    self.state.dtmf_sent.append(digits)
+                    self.state.last_dtmf_sent = digits
+                    await self._send_dtmf(digits)
+
+                if not pcm_chunk:
                     # No new data yet, wait a bit
                     await asyncio.sleep(0.5)
 
