@@ -112,7 +112,7 @@ TERMINAL_TRIGGERS = [
     "transferring",
     "goodbye",
     "thank you for calling",
-    "please hang up",
+
 ]
 
 
