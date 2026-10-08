@@ -478,13 +478,18 @@ class ReactiveEngine:
         import asyncio as _aio
         for ch in digits:
             try:
-                resp = await self.manager.send_action({
-                    "Action": "PlayDTMF",
-                    "Channel": self.sip_channel,
-                    "Digit": ch,
-                    "Duration": "250",
-                })
+                resp = await _aio.wait_for(
+                    self.manager.send_action({
+                        "Action": "PlayDTMF",
+                        "Channel": self.sip_channel,
+                        "Digit": ch,
+                        "Duration": "250",
+                    }),
+                    timeout=3.0,
+                )
                 self.logger.info(f"PlayDTMF '{ch}' response: {resp}")
+            except _aio.TimeoutError:
+                self.logger.warning(f"PlayDTMF '{ch}' timed out - continuing")
             except Exception as e:
                 self.logger.error(f"PlayDTMF '{ch}' failed: {e}")
                 return
