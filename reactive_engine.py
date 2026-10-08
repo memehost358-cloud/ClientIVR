@@ -73,6 +73,8 @@ WAV_HEADER_BYTES = 44  # MixMonitor writes a 44-byte header before PCM data
 # ─── Trigger phrases derived from actual TD IVR transcript ───
 # Matching is case-insensitive, substring.
 CARD_NUMBER_TRIGGERS = [
+    "your card number",
+    "card number",
     "enter your card number",
     "please enter or say your card number",
     "enter or say your card number",
