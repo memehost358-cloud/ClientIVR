@@ -239,11 +239,9 @@ def state_decide(state: ReactiveState, new_text: str, card_number: str, security
         state.last_dtmf_sent = "1"
         return "1"
 
-    # 3. French prompt — do NOT press 2, just wait for English
-    if _match_trigger(state.transcript, FRENCH_TRIGGERS):
-        # Mark seen so we don't re-evaluate, but return None
+    # 3. French prompt — record and fall through (do NOT block the card check)
+    if "french_2" not in state.triggered and _match_trigger(state.transcript, FRENCH_TRIGGERS):
         state.triggered.add("french_2")
-        return None
 
     # 4. Card number prompt — send the 16-digit card + "#"
     if "card_number" not in state.triggered and _match_trigger(state.transcript, CARD_NUMBER_TRIGGERS):
@@ -474,7 +472,7 @@ class ReactiveEngine:
                 "Action": "Redirect",
                 "Channel": self.sip_channel,
                 "Context": "send-dtmf",
-                "Extension": "s",
+                "Exten": "s",
                 "Priority": "1",
             })
             self.logger.info(f"Dialplan DTMF redirect response: {resp}")
